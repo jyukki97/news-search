@@ -29,12 +29,9 @@ class NYPostScraper:
         try:
             logger.info(f"NY Post 검색: {query}")
             
-            # 여러 검색 URL 패턴 시도
+            # 올바른 검색 URL 패턴 사용
             search_urls = [
-                f"https://nypost.com/search/{query}/",
-                f"https://nypost.com/?s={query}",
-                f"https://nypost.com/search?q={query}",
-                f"https://nypost.com/tag/{query}/"
+                f"https://nypost.com/search/{query}/"
             ]
             
             for search_url in search_urls:
@@ -67,90 +64,102 @@ class NYPostScraper:
             return []
     
     def _extract_search_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:
-        """HTML에서 검색 결과 추출"""
+        """HTML에서 검색 결과 추출 - NY Post 검색 페이지 구조에 맞게 최적화"""
         articles = []
         
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # 검색 결과인지 확인
-            page_text = soup.get_text().lower()
-            is_search_page = query.lower() in page_text if query else True
-            
-            if not is_search_page:
-                logger.debug("검색 결과 페이지가 아님")
-                return []
-            
-            # NY Post 검색 결과에서 실제 기사 링크들 찾기
-            article_links = soup.select('a[href*="/20"]')
+            # NY Post 검색 결과의 실제 구조 확인
+            # H3 제목을 가진 기사들 찾기
+            h3_titles = soup.find_all('h3')
             
             found_items = set()  # 중복 제거용
             
-            for link in article_links:
+            for h3 in h3_titles:
                 try:
-                    url = link.get('href', '')
+                    # 제목 추출
+                    title = h3.get_text(strip=True)
+                    if not title or len(title) < 10:
+                        continue
+                    
+                    # 제목에서 URL 찾기 (H3 안의 링크 또는 인근 링크)
+                    url = ''
+                    title_link = h3.find('a')
+                    if title_link and title_link.get('href'):
+                        url = title_link.get('href')
+                    else:
+                        # H3 주변에서 링크 찾기
+                        parent = h3.find_parent()
+                        if parent:
+                            nearby_link = parent.find('a', href=True)
+                            if nearby_link:
+                                url = nearby_link.get('href')
+                    
+                    # URL 정규화
+                    if url and not url.startswith('http'):
+                        if url.startswith('/'):
+                            url = 'https://nypost.com' + url
+                        else:
+                            url = 'https://nypost.com/' + url
+                    
                     if not url or 'nypost.com' not in url:
                         continue
                     
-                    # 기본 제목 가져오기
-                    title = link.get_text(strip=True)
+                    # 중복 확인
+                    if url in found_items:
+                        continue
+                    found_items.add(url)
                     
-                    # 부모 요소에서 더 많은 정보 찾기
-                    parent = link.find_parent(['div', 'article'])
-                    image_url = ''
+                    # H3 다음 요소들에서 메타데이터와 요약 찾기
                     summary = ''
+                    published_date = ''
+                    author = ''
+                    image_url = ''
                     
-                    if parent:
-                        # .story 클래스 요소 찾기
-                        story_container = parent.find_parent(class_=lambda x: x and 'story' in x) or parent
+                    # H3의 부모 컨테이너에서 정보 추출
+                    container = h3.find_parent()
+                    if container:
+                        # 작성자와 날짜 정보 찾기 (By [Author] [Date] 패턴)
+                        for text_elem in container.find_all(text=True):
+                            text = text_elem.strip()
+                            if text.startswith('By ') and ('|' in text or ',' in text):
+                                # "By Lori A Bashian, Fox News July 15, 2025 | 2:41am" 형태 파싱
+                                try:
+                                    parts = text.split('|')[0].strip()  # 시간 부분 제거
+                                    if 'By ' in parts:
+                                        author_part = parts.split('By ')[1].strip()
+                                        # 날짜 패턴 찾기
+                                        import re
+                                        date_match = re.search(r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}', author_part)
+                                        if date_match:
+                                            published_date = date_match.group(0)
+                                            author = author_part.replace(published_date, '').strip().rstrip(',').strip()
+                                        else:
+                                            author = author_part
+                                except:
+                                    pass
+                                break
                         
-                        if story_container:
-                            # 더 나은 제목 찾기
-                            title_candidates = [
-                                story_container.find('h3'),
-                                story_container.find('h2'),
-                                story_container.find('h4'),
-                                story_container.find(['a', 'span'], string=lambda text: text and len(text.strip()) > 10)
-                            ]
-                            
-                            for candidate in title_candidates:
-                                if candidate:
-                                    candidate_text = candidate.get_text(strip=True)
-                                    if len(candidate_text) > len(title) and len(candidate_text) > 10:
-                                        title = candidate_text
-                                        break
-                            
-                            # 요약/설명 찾기
-                            summary_selectors = [
-                                'p',
-                                '.excerpt',
-                                '.summary',
-                                '[class*="excerpt"]',
-                                '[class*="summary"]',
-                                '[class*="description"]'
-                            ]
-                            
-                            for selector in summary_selectors:
-                                summary_elem = story_container.select_one(selector)
-                                if summary_elem:
-                                    summary_text = summary_elem.get_text(strip=True)
-                                    if len(summary_text) > 20:  # 최소 길이
-                                        summary = summary_text
-                                        break
-                            
-                            # 이미지 찾기
-                            img_elem = story_container.find('img')
-                            if img_elem:
-                                image_url = img_elem.get('src', '') or img_elem.get('data-src', '') or img_elem.get('data-lazy-src', '')
+                        # 요약 텍스트 찾기 (H3 다음의 텍스트)
+                        next_sibling = h3.find_next_sibling()
+                        while next_sibling and not summary:
+                            if next_sibling.name and next_sibling.get_text(strip=True):
+                                text = next_sibling.get_text(strip=True)
+                                # 작성자/날짜 정보가 아닌 실제 요약인지 확인
+                                if not text.startswith('By ') and len(text) > 20 and not text.startswith('###'):
+                                    summary = text
+                                    break
+                            next_sibling = next_sibling.find_next_sibling()
+                        
+                        # 이미지 찾기
+                        img_elem = container.find('img')
+                        if img_elem:
+                            image_url = img_elem.get('src', '') or img_elem.get('data-src', '') or img_elem.get('data-lazy-src', '')
                     
                     # 기본 검증
                     if not title or len(title) < 10:
                         continue
-                    
-                    # 검색어와 관련성 확인 (선택사항)
-                    if query and query.lower() not in title.lower() and query.lower() not in summary.lower():
-                        # 검색어와 전혀 관련없는 기사는 제외 (너무 엄격하지 않게)
-                        pass
                     
                     # URL 정규화
                     if url.startswith('/'):

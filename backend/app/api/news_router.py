@@ -43,10 +43,10 @@ async def search_news(
             # 각 스크래퍼별로 Future 생성
             futures = {
                 executor.submit(run_scraper_search, bbc_scraper, query, limit): "BBC News",
-                # executor.submit(run_scraper_search, nypost_scraper, query, limit): "NY Post"  # 임시 비활성화
+                # executor.submit(run_scraper_search, nypost_scraper, query, limit): "NY Post"  # 기술적 문제로 임시 비활성화
                 # executor.submit(run_scraper_search, thesun_scraper, query, limit): "The Sun"  # 임시 비활성화
                 # executor.submit(run_scraper_search, dailymail_scraper, query, limit): "Daily Mail"  # 임시 비활성화
-                executor.submit(run_scraper_search, scmp_scraper, query, limit): "SCMP"
+                # executor.submit(run_scraper_search, scmp_scraper, query, limit): "SCMP"  # 임시 비활성화
             }
             
             # 결과 수집
