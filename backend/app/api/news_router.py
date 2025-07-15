@@ -10,6 +10,7 @@ from ..scrapers.thesun_scraper import TheSunScraper
 from ..scrapers.dailymail_scraper import DailyMailScraper
 from ..scrapers.scmp_scraper import SCMPScraper
 from ..scrapers.vnexpress_scraper import VNExpressScraper
+from ..scrapers.bangkokpost_scraper import BangkokPostScraper
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ bbc_scraper = BBCNewsScraper()
 nypost_scraper = NYPostScraper()
 thesun_scraper = TheSunScraper()
 vnexpress_scraper = VNExpressScraper()
+bangkokpost_scraper = BangkokPostScraper()
 dailymail_scraper = DailyMailScraper()
 scmp_scraper = SCMPScraper()
 
@@ -46,6 +48,7 @@ async def search_news(
             futures = {
                 executor.submit(run_scraper_search, bbc_scraper, query, limit): "BBC News",
                 executor.submit(run_scraper_search, vnexpress_scraper, query, limit): "VN Express",
+                executor.submit(run_scraper_search, bangkokpost_scraper, query, limit): "Bangkok Post",
                 # executor.submit(run_scraper_search, nypost_scraper, query, limit): "NY Post"  # 기술적 문제로 임시 비활성화
                 # executor.submit(run_scraper_search, thesun_scraper, query, limit): "The Sun"  # 임시 비활성화
                 # executor.submit(run_scraper_search, dailymail_scraper, query, limit): "Daily Mail"  # 임시 비활성화
@@ -90,7 +93,7 @@ async def search_news(
 async def get_latest_news(
     category: str = Query("top_stories", description="뉴스 카테고리"),
     limit: int = Query(10, ge=1, le=50, description="가져올 기사 수"),
-    source: str = Query("all", description="뉴스 소스 (all, bbc, nypost, thesun, dailymail, scmp, vnexpress)")
+    source: str = Query("all", description="뉴스 소스 (all, bbc, nypost, thesun, dailymail, scmp, vnexpress, bangkokpost)")
 ) -> Dict:
     """카테고리별 최신 뉴스"""
     try:
@@ -152,6 +155,15 @@ async def get_latest_news(
                     sources.append("VN Express")
             except Exception as e:
                 logger.error(f"VN Express 최신 뉴스 실패: {e}")
+        
+        if source == "all" or source == "bangkokpost":
+            try:
+                bangkokpost_articles = bangkokpost_scraper.get_latest_news(category, limit)
+                if bangkokpost_articles:
+                    all_articles.extend(bangkokpost_articles)
+                    sources.append("Bangkok Post")
+            except Exception as e:
+                logger.error(f"Bangkok Post 최신 뉴스 실패: {e}")
         
         # 날짜 순으로 정렬
         if all_articles:
