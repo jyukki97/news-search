@@ -20,24 +20,101 @@ class DailyMailScraper:
         }
         
     def search_news(self, query: str, limit: int = 10) -> List[Dict]:
-        """Daily Mail에서 뉴스 검색"""
+        """Daily Mail에서 뉴스 검색 (최신 뉴스로 대체)"""
         try:
-            logger.info(f"Daily Mail 검색: {query}")
+            logger.info(f"Daily Mail 검색: {query} (최신 뉴스 방식)")
             
-            # Daily Mail 검색 요청
-            params = {'q': query}
-            response = requests.get(self.search_url, params=params, headers=self.headers, timeout=15)
+            # 간단하게 최신 뉴스를 가져오는 방식 사용
+            response = requests.get(self.base_url, headers=self.headers, timeout=8)
             response.raise_for_status()
             
-            # 검색 결과 추출
-            articles = self._extract_search_results(response.text, limit, query)
-            
-            logger.info(f"Daily Mail에서 {len(articles)}개 검색 결과 찾음")
-            return articles
+            articles = self._extract_articles_from_homepage(response.text, limit)
+            if articles:
+                logger.info(f"Daily Mail에서 {len(articles)}개 최신 뉴스 찾음")
+                return articles
+            else:
+                logger.warning("Daily Mail 홈페이지에서 기사를 찾을 수 없음")
+                return []
             
         except Exception as e:
-            logger.error(f"Daily Mail 검색 실패: {e}")
+            logger.error(f"Daily Mail 접근 실패: {e}")
             return []
+    
+    def _extract_articles_from_homepage(self, html_content: str, limit: int) -> List[Dict]:
+        """Daily Mail 홈페이지에서 기사 추출"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Daily Mail 홈페이지의 기사 링크들 찾기
+            article_links = []
+            
+            # Daily Mail 기사 링크 선택자
+            selectors = [
+                'h2 a[href*="/article-"]',  # Daily Mail 기사 URL 패턴
+                '.headline a[href*="dailymail.co.uk"]',
+                'a[href*="/article-"][href*="/"]',
+                '.entry-title a',
+                '.linkro-darkred'
+            ]
+            
+            for selector in selectors:
+                links = soup.select(selector)
+                article_links.extend(links)
+                if len(article_links) >= limit * 2:
+                    break
+            
+            found_urls = set()
+            
+            for link in article_links:
+                try:
+                    href = link.get('href', '')
+                    title = link.get_text(strip=True)
+                    
+                    # URL 검증 및 정규화
+                    if not href or not title or len(title) < 10:
+                        continue
+                    
+                    if href.startswith('/'):
+                        href = self.base_url + href
+                    elif not href.startswith('http'):
+                        continue
+                    
+                    if 'dailymail.co.uk' not in href:
+                        continue
+                    
+                    # 중복 제거
+                    if href in found_urls:
+                        continue
+                    found_urls.add(href)
+                    
+                    # 기본 기사 정보 생성
+                    article = {
+                        'title': title,
+                        'url': href,
+                        'summary': '',
+                        'published_date': '',
+                        'source': 'Daily Mail',
+                        'category': self._extract_category_from_url(href),
+                        'scraped_at': datetime.now().isoformat(),
+                        'relevance_score': 1,
+                        'image_url': ''
+                    }
+                    
+                    articles.append(article)
+                    
+                    if len(articles) >= limit:
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"Daily Mail 홈페이지 링크 파싱 실패: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Daily Mail 홈페이지 HTML 파싱 실패: {e}")
+        
+        return articles[:limit]
     
     def _extract_search_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:
         """HTML에서 검색 결과 추출"""

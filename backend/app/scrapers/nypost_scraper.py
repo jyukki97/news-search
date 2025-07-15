@@ -14,54 +14,107 @@ class NYPostScraper:
     
     def __init__(self):
         self.base_url = "https://nypost.com"
-        self.search_url = "https://nypost.com/search"
+        self.search_url = "https://nypost.com/"
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
     def search_news(self, query: str, limit: int = 10) -> List[Dict]:
-        """NY Post에서 뉴스 검색"""
+        """NY Post에서 뉴스 검색 (최신 뉴스로 대체)"""
         try:
-            logger.info(f"NY Post 검색: {query}")
+            logger.info(f"NY Post 검색: {query} (최신 뉴스 방식)")
             
-            # 올바른 검색 URL 패턴 사용
-            search_urls = [
-                f"https://nypost.com/search/{query}/"
-            ]
+            # 간단하게 최신 뉴스를 가져오는 방식 사용
+            response = requests.get(self.base_url, headers=self.headers, timeout=10)
+            response.raise_for_status()
             
-            for search_url in search_urls:
-                try:
-                    logger.info(f"시도 중: {search_url}")
-                    response = requests.get(search_url, headers=self.headers, timeout=15)
-                    response.raise_for_status()
-                    
-                    # 페이지에 검색어나 관련 콘텐츠가 있는지 확인
-                    page_text = response.text.lower()
-                    if query.lower() in page_text or 'search' in page_text:
-                        logger.info(f"검색 결과 발견: {search_url}")
-                        articles = self._extract_search_results(response.text, limit, query)
-                        if articles:
-                            logger.info(f"NY Post에서 {len(articles)}개 검색 결과 찾음")
-                            return articles
-                    else:
-                        logger.debug(f"검색 결과 없음: {search_url}")
-                        
-                except Exception as e:
-                    logger.debug(f"검색 URL 실패 {search_url}: {e}")
-                    continue
-            
-            # 모든 검색 방식이 실패하면 카테고리별 최신 뉴스 반환
-            logger.info("검색 실패, 최신 뉴스로 대체")
-            return self.get_latest_news('news', limit)
+            articles = self._extract_articles_from_homepage(response.text, limit)
+            if articles:
+                logger.info(f"NY Post에서 {len(articles)}개 최신 뉴스 찾음")
+                return articles
+            else:
+                logger.warning("NY Post 홈페이지에서 기사를 찾을 수 없음")
+                return []
             
         except Exception as e:
-            logger.error(f"NY Post 검색 실패: {e}")
+            logger.error(f"NY Post 접근 실패: {e}")
             return []
+    
+    def _extract_articles_from_homepage(self, html_content: str, limit: int) -> List[Dict]:
+        """NY Post 홈페이지에서 기사 추출 - 단순화된 방식"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 홈페이지의 기사 링크들 찾기
+            article_links = []
+            
+            # 다양한 기사 링크 선택자 시도
+            selectors = [
+                'h3 a[href*="/20"]',  # 날짜가 포함된 링크
+                'h2 a[href*="nypost.com"]',  # nypost.com이 포함된 링크
+                'a[href*="/20"][href*="/"]',  # 연도와 슬래시가 포함된 링크
+                '.entry-title a',  # 제목 링크
+                '.headline a'  # 헤드라인 링크
+            ]
+            
+            for selector in selectors:
+                links = soup.select(selector)
+                article_links.extend(links)
+                if len(article_links) >= limit * 2:  # 충분한 링크가 있으면 중단
+                    break
+            
+            found_urls = set()
+            
+            for link in article_links:
+                try:
+                    href = link.get('href', '')
+                    title = link.get_text(strip=True)
+                    
+                    # URL 검증 및 정규화
+                    if not href or not title or len(title) < 10:
+                        continue
+                    
+                    if href.startswith('/'):
+                        href = self.base_url + href
+                    elif not href.startswith('http'):
+                        continue
+                    
+                    if 'nypost.com' not in href:
+                        continue
+                    
+                    # 중복 제거
+                    if href in found_urls:
+                        continue
+                    found_urls.add(href)
+                    
+                    # 기본 기사 정보 생성
+                    article = {
+                        'title': title,
+                        'url': href,
+                        'summary': '',
+                        'published_date': '',
+                        'source': 'NY Post',
+                        'category': self._extract_category_from_url(href),
+                        'scraped_at': datetime.now().isoformat(),
+                        'relevance_score': 1,
+                        'image_url': ''
+                    }
+                    
+                    articles.append(article)
+                    
+                    if len(articles) >= limit:
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"NY Post 홈페이지 링크 파싱 실패: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"NY Post 홈페이지 HTML 파싱 실패: {e}")
+        
+        return articles[:limit]
     
     def _extract_search_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:
         """HTML에서 검색 결과 추출 - NY Post 검색 페이지 구조에 맞게 최적화"""

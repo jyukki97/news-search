@@ -40,16 +40,21 @@ def run_scraper_search(scraper, query, limit):
 @router.get("/search")
 async def search_news(
     query: str = Query(..., description="검색할 키워드"),
-    limit: int = Query(10, ge=1, le=50, description="가져올 기사 수 (1-50)"),
-    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)"),
+    page: int = Query(1, ge=1, description="페이지 번호 (1부터 시작)"),
+    per_site_limit: int = Query(3, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
+    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)"),
     sort: str = Query("date_desc", description="정렬 방식 (date_desc: 최신순, date_asc: 과거순, relevance: 관련도순)")
 ) -> Dict:
-    """뉴스 통합 검색"""
+    """뉴스 통합 검색 (사이트별 페이지네이션)"""
     try:
-        logger.info(f"뉴스 통합 검색 요청: {query}, 사이트: {sources}")
+        logger.info(f"뉴스 통합 검색 요청: {query}, 페이지: {page}, 사이트당: {per_site_limit}개, 사이트: {sources}")
         
         # 검색할 사이트 파싱
         requested_sources = [s.strip().lower() for s in sources.split(",")] if sources != "all" else ["all"]
+        
+        # 각 사이트에서 페이지별로 가져올 기사 수 계산
+        # 페이지네이션을 위해 더 많이 가져온 후 필요한 부분만 추출
+        fetch_limit = page * per_site_limit
         
         # 병렬로 여러 사이트에서 검색
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -57,30 +62,42 @@ async def search_news(
             futures = {}
             
             if sources == "all" or "bbc" in requested_sources:
-                futures[executor.submit(run_scraper_search, bbc_scraper, query, limit)] = "BBC News"
+                futures[executor.submit(run_scraper_search, bbc_scraper, query, fetch_limit)] = "BBC News"
             if sources == "all" or "vnexpress" in requested_sources:
-                futures[executor.submit(run_scraper_search, vnexpress_scraper, query, limit)] = "VN Express"
+                futures[executor.submit(run_scraper_search, vnexpress_scraper, query, fetch_limit)] = "VN Express"
             if sources == "all" or "bangkokpost" in requested_sources:
-                futures[executor.submit(run_scraper_search, bangkokpost_scraper, query, limit)] = "Bangkok Post"
+                futures[executor.submit(run_scraper_search, bangkokpost_scraper, query, fetch_limit)] = "Bangkok Post"
             if sources == "all" or "asahi" in requested_sources:
-                futures[executor.submit(run_scraper_search, asahi_scraper, query, limit)] = "Asahi Shimbun"
+                futures[executor.submit(run_scraper_search, asahi_scraper, query, fetch_limit)] = "Asahi Shimbun"
             if sources == "all" or "yomiuri" in requested_sources:
-                futures[executor.submit(run_scraper_search, yomiuri_scraper, query, limit)] = "Yomiuri Shimbun"
+                futures[executor.submit(run_scraper_search, yomiuri_scraper, query, fetch_limit)] = "Yomiuri Shimbun"
             if sources == "all" or "thesun" in requested_sources:
-                futures[executor.submit(run_scraper_search, thesun_scraper, query, limit)] = "The Sun"
+                futures[executor.submit(run_scraper_search, thesun_scraper, query, fetch_limit)] = "The Sun"
+            if sources == "all" or "nypost" in requested_sources:
+                futures[executor.submit(run_scraper_search, nypost_scraper, query, fetch_limit)] = "NY Post"
+            if sources == "all" or "dailymail" in requested_sources:
+                futures[executor.submit(run_scraper_search, dailymail_scraper, query, fetch_limit)] = "Daily Mail"
+            if sources == "all" or "scmp" in requested_sources:
+                futures[executor.submit(run_scraper_search, scmp_scraper, query, fetch_limit)] = "SCMP"
             
             # 결과 수집
             all_articles = []
-            sources = []
+            active_sources = []
             
             for future in concurrent.futures.as_completed(futures):
                 source_name = futures[future]
                 try:
                     articles = future.result()
                     if articles:
-                        all_articles.extend(articles)
-                        sources.append(source_name)
-                        logger.info(f"{source_name}에서 {len(articles)}개 기사 수집")
+                        # 페이지네이션 적용: 해당 페이지에 해당하는 기사만 추출
+                        start_idx = (page - 1) * per_site_limit
+                        end_idx = start_idx + per_site_limit
+                        page_articles = articles[start_idx:end_idx]
+                        
+                        if page_articles:
+                            all_articles.extend(page_articles)
+                            active_sources.append(source_name)
+                            logger.info(f"{source_name}에서 페이지 {page}: {len(page_articles)}개 기사 수집")
                 except Exception as e:
                     logger.error(f"{source_name} 검색 실패: {e}")
         
@@ -95,15 +112,18 @@ async def search_news(
             elif sort == "relevance":
                 # 관련도 순으로 정렬
                 all_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
-            
-            # 제한된 수만 반환
-            all_articles = all_articles[:limit]
+        
+        # 다음 페이지 여부 확인 (간단히 현재 페이지에서 기사가 있다면 다음 페이지도 있을 가능성이 있다고 가정)
+        has_next_page = len(all_articles) > 0
         
         return {
             "success": True,
             "query": query,
+            "page": page,
+            "per_site_limit": per_site_limit,
             "total_articles": len(all_articles),
-            "sources": sources,
+            "active_sources": active_sources,
+            "has_next_page": has_next_page,
             "articles": all_articles
         }
         

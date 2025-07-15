@@ -14,8 +14,11 @@ export interface NewsArticle {
 export interface SearchResponse {
   success: boolean
   query: string
+  page: number
+  per_site_limit: number
   total_articles: number
-  sources: string[]
+  active_sources: string[]
+  has_next_page: boolean
   articles: NewsArticle[]
 }
 
@@ -47,10 +50,10 @@ async function apiRequest<T>(endpoint: string): Promise<T> {
   return response.json()
 }
 
-// 뉴스 검색
-export async function searchNews(query: string, limit: number = 10): Promise<SearchResponse> {
+// 뉴스 검색 (페이지네이션 지원)
+export async function searchNews(query: string, page: number = 1, perSiteLimit: number = 3): Promise<SearchResponse> {
   const encodedQuery = encodeURIComponent(query)
-  return apiRequest<SearchResponse>(`/api/news/search?query=${encodedQuery}&limit=${limit}`)
+  return apiRequest<SearchResponse>(`/api/news/search?query=${encodedQuery}&page=${page}&per_site_limit=${perSiteLimit}`)
 }
 
 // 최신 뉴스 가져오기
