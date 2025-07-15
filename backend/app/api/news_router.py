@@ -9,6 +9,7 @@ from ..scrapers.nypost_scraper import NYPostScraper
 from ..scrapers.thesun_scraper import TheSunScraper
 from ..scrapers.dailymail_scraper import DailyMailScraper
 from ..scrapers.scmp_scraper import SCMPScraper
+from ..scrapers.vnexpress_scraper import VNExpressScraper
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/api/news", tags=["news"])
 bbc_scraper = BBCNewsScraper()
 nypost_scraper = NYPostScraper()
 thesun_scraper = TheSunScraper()
+vnexpress_scraper = VNExpressScraper()
 dailymail_scraper = DailyMailScraper()
 scmp_scraper = SCMPScraper()
 
@@ -43,6 +45,7 @@ async def search_news(
             # 각 스크래퍼별로 Future 생성
             futures = {
                 executor.submit(run_scraper_search, bbc_scraper, query, limit): "BBC News",
+                executor.submit(run_scraper_search, vnexpress_scraper, query, limit): "VN Express",
                 # executor.submit(run_scraper_search, nypost_scraper, query, limit): "NY Post"  # 기술적 문제로 임시 비활성화
                 # executor.submit(run_scraper_search, thesun_scraper, query, limit): "The Sun"  # 임시 비활성화
                 # executor.submit(run_scraper_search, dailymail_scraper, query, limit): "Daily Mail"  # 임시 비활성화
@@ -87,7 +90,7 @@ async def search_news(
 async def get_latest_news(
     category: str = Query("top_stories", description="뉴스 카테고리"),
     limit: int = Query(10, ge=1, le=50, description="가져올 기사 수"),
-    source: str = Query("all", description="뉴스 소스 (all, bbc, nypost, thesun, dailymail, scmp)")
+    source: str = Query("all", description="뉴스 소스 (all, bbc, nypost, thesun, dailymail, scmp, vnexpress)")
 ) -> Dict:
     """카테고리별 최신 뉴스"""
     try:
@@ -140,6 +143,15 @@ async def get_latest_news(
                     sources.append("SCMP")
             except Exception as e:
                 logger.error(f"SCMP 최신 뉴스 실패: {e}")
+        
+        if source == "all" or source == "vnexpress":
+            try:
+                vnexpress_articles = vnexpress_scraper.get_latest_news(category, limit)
+                if vnexpress_articles:
+                    all_articles.extend(vnexpress_articles)
+                    sources.append("VN Express")
+            except Exception as e:
+                logger.error(f"VN Express 최신 뉴스 실패: {e}")
         
         # 날짜 순으로 정렬
         if all_articles:
