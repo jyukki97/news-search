@@ -40,26 +40,34 @@ def run_scraper_search(scraper, query, limit):
 @router.get("/search")
 async def search_news(
     query: str = Query(..., description="검색할 키워드"),
-    limit: int = Query(10, ge=1, le=50, description="가져올 기사 수 (1-50)")
+    limit: int = Query(10, ge=1, le=50, description="가져올 기사 수 (1-50)"),
+    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)"),
+    sort: str = Query("date_desc", description="정렬 방식 (date_desc: 최신순, date_asc: 과거순, relevance: 관련도순)")
 ) -> Dict:
     """뉴스 통합 검색"""
     try:
-        logger.info(f"뉴스 통합 검색 요청: {query}")
+        logger.info(f"뉴스 통합 검색 요청: {query}, 사이트: {sources}")
+        
+        # 검색할 사이트 파싱
+        requested_sources = [s.strip().lower() for s in sources.split(",")] if sources != "all" else ["all"]
         
         # 병렬로 여러 사이트에서 검색
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            # 각 스크래퍼별로 Future 생성
-            futures = {
-                executor.submit(run_scraper_search, bbc_scraper, query, limit): "BBC News",
-                executor.submit(run_scraper_search, vnexpress_scraper, query, limit): "VN Express",
-                executor.submit(run_scraper_search, bangkokpost_scraper, query, limit): "Bangkok Post",
-                executor.submit(run_scraper_search, asahi_scraper, query, limit): "Asahi Shimbun",
-                executor.submit(run_scraper_search, yomiuri_scraper, query, limit): "Yomiuri Shimbun",
-                # executor.submit(run_scraper_search, nypost_scraper, query, limit): "NY Post",  # 문제 해결 후 재활성화
-                executor.submit(run_scraper_search, thesun_scraper, query, limit): "The Sun",
-                # executor.submit(run_scraper_search, dailymail_scraper, query, limit): "Daily Mail"  # 임시 비활성화
-                # executor.submit(run_scraper_search, scmp_scraper, query, limit): "SCMP"  # 임시 비활성화
-            }
+            # 각 스크래퍼별로 Future 생성 (필터링 적용)
+            futures = {}
+            
+            if sources == "all" or "bbc" in requested_sources:
+                futures[executor.submit(run_scraper_search, bbc_scraper, query, limit)] = "BBC News"
+            if sources == "all" or "vnexpress" in requested_sources:
+                futures[executor.submit(run_scraper_search, vnexpress_scraper, query, limit)] = "VN Express"
+            if sources == "all" or "bangkokpost" in requested_sources:
+                futures[executor.submit(run_scraper_search, bangkokpost_scraper, query, limit)] = "Bangkok Post"
+            if sources == "all" or "asahi" in requested_sources:
+                futures[executor.submit(run_scraper_search, asahi_scraper, query, limit)] = "Asahi Shimbun"
+            if sources == "all" or "yomiuri" in requested_sources:
+                futures[executor.submit(run_scraper_search, yomiuri_scraper, query, limit)] = "Yomiuri Shimbun"
+            if sources == "all" or "thesun" in requested_sources:
+                futures[executor.submit(run_scraper_search, thesun_scraper, query, limit)] = "The Sun"
             
             # 결과 수집
             all_articles = []
@@ -76,10 +84,18 @@ async def search_news(
                 except Exception as e:
                     logger.error(f"{source_name} 검색 실패: {e}")
         
-        # 결과가 너무 많으면 관련도와 날짜를 고려해서 정렬 후 제한
+        # 정렬 적용
         if all_articles:
-            # 날짜 순으로 정렬 (최신순)
-            all_articles.sort(key=lambda x: x.get('published_date', ''), reverse=True)
+            if sort == "date_desc":
+                # 날짜 순으로 정렬 (최신순)
+                all_articles.sort(key=lambda x: x.get('published_date', ''), reverse=True)
+            elif sort == "date_asc":
+                # 날짜 순으로 정렬 (과거순)
+                all_articles.sort(key=lambda x: x.get('published_date', ''), reverse=False)
+            elif sort == "relevance":
+                # 관련도 순으로 정렬
+                all_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+            
             # 제한된 수만 반환
             all_articles = all_articles[:limit]
         
