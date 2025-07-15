@@ -55,8 +55,8 @@ async def search_news(
                 executor.submit(run_scraper_search, bangkokpost_scraper, query, limit): "Bangkok Post",
                 executor.submit(run_scraper_search, asahi_scraper, query, limit): "Asahi Shimbun",
                 executor.submit(run_scraper_search, yomiuri_scraper, query, limit): "Yomiuri Shimbun",
-                # executor.submit(run_scraper_search, nypost_scraper, query, limit): "NY Post"  # 기술적 문제로 임시 비활성화
-                # executor.submit(run_scraper_search, thesun_scraper, query, limit): "The Sun"  # 임시 비활성화
+                # executor.submit(run_scraper_search, nypost_scraper, query, limit): "NY Post",  # 문제 해결 후 재활성화
+                executor.submit(run_scraper_search, thesun_scraper, query, limit): "The Sun",
                 # executor.submit(run_scraper_search, dailymail_scraper, query, limit): "Daily Mail"  # 임시 비활성화
                 # executor.submit(run_scraper_search, scmp_scraper, query, limit): "SCMP"  # 임시 비활성화
             }

@@ -1,5 +1,5 @@
 [ ] New York Post - https://nypost.com/
-[ ] The Sun - https://www.thesun.co.uk/
+[x] The Sun - https://www.thesun.co.uk/
 [ ] Daily Mail - https://www.dailymail.co.uk/
 [x] 영국 BBC 이미지 안나오고 있음
 [ ] 사우스 차이나 모닝 포스트 - https://www.scmp.com/

@@ -32,7 +32,11 @@ const nextConfig = {
       'e.vnexpress.net',
       'vnexpress.net',
       'vcdn.vnecdn.net',
+      'vcdn1-english.vnecdn.net',
+      'vcdn2-english.vnecdn.net',
+      'vcdn3-english.vnecdn.net',
       'i1-vnexpress.vnecdn.net',
+      'i2-vnexpress.vnecdn.net',
       // Bangkok Post
       'www.bangkokpost.com',
       'bangkokpost.com',
