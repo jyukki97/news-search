@@ -22,7 +22,7 @@ class TheSunScraper:
     def search_news(self, query: str, limit: int = 10) -> List[Dict]:
         """The Sun에서 뉴스 검색"""
         try:
-            logger.info(f"The Sun 검색: {query}")
+            logger.info("The Sun search: {}".format(query))
             
             # The Sun 검색 요청 (URL 패턴: ?s=query)
             params = {'s': query}
@@ -32,11 +32,11 @@ class TheSunScraper:
             # 검색 결과 추출
             articles = self._extract_search_results(response.text, limit, query)
             
-            logger.info(f"The Sun에서 {len(articles)}개 검색 결과 찾음")
+            logger.info("The Sun found {} search results".format(len(articles)))
             return articles
             
         except Exception as e:
-            logger.error(f"The Sun 검색 실패: {e}")
+            logger.error("The Sun search failed: {}".format(e))
             return []
     
     def _extract_search_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:
@@ -59,7 +59,9 @@ class TheSunScraper:
                 'a[href*="/news/"]',
                 'a[href*="/sport/"]',
                 'a[href*="/money/"]',
-                'a[href*="/tech/"]'
+                'a[href*="/tech/"]',
+                'a[href*="/fabulous/"]',
+                'h2, h3, h4'  # 제목 요소들도 포함
             ]
             
             found_items = set()  # 중복 제거용
@@ -81,7 +83,7 @@ class TheSunScraper:
                             title = element.get_text(strip=True)
                             
                             # 부모 요소에서 더 많은 정보 가져오기
-                            parent = element.find_parent(['article', 'div'])
+                            parent = element.find_parent(['article', 'div', 'section'])
                             if parent:
                                 # 더 나은 제목 찾기
                                 title_elem = parent.find(['h1', 'h2', 'h3', 'h4'])
@@ -93,10 +95,34 @@ class TheSunScraper:
                                 if summary_elem:
                                     summary = summary_elem.get_text(strip=True)
                                 
-                                # 이미지 찾기
-                                img_elem = parent.find('img')
-                                if img_elem:
-                                    image_url = img_elem.get('src', '') or img_elem.get('data-src', '') or img_elem.get('data-lazy-src', '')
+                                # 이미지 찾기 - 개선된 로직
+                                image_url = self._extract_image_from_element(parent)
+                        
+                        elif element.name in ['h2', 'h3', 'h4']:
+                            # 헤딩 요소인 경우
+                            title = element.get_text(strip=True)
+                            
+                            # 링크 찾기
+                            link_elem = element.find('a')
+                            if not link_elem:
+                                # 부모나 주변에서 링크 찾기
+                                parent = element.find_parent(['div', 'article', 'section'])
+                                if parent:
+                                    link_elem = parent.find('a')
+                            
+                            if link_elem:
+                                url = link_elem.get('href', '')
+                                
+                                # 상위 컨테이너에서 요약과 이미지 찾기
+                                parent_container = element.find_parent(['div', 'article', 'section'])
+                                if parent_container:
+                                    # 요약 찾기
+                                    summary_elem = parent_container.find(['p', '.excerpt', '.summary', '.description'])
+                                    if summary_elem:
+                                        summary = summary_elem.get_text(strip=True)
+                                    
+                                    # 이미지 찾기
+                                    image_url = self._extract_image_from_element(parent_container)
                         
                         else:
                             # article, div 등의 컨테이너 요소인 경우
@@ -115,9 +141,7 @@ class TheSunScraper:
                                     summary = summary_elem.get_text(strip=True)
                                 
                                 # 이미지 찾기
-                                img_elem = element.find('img')
-                                if img_elem:
-                                    image_url = img_elem.get('src', '') or img_elem.get('data-src', '') or img_elem.get('data-lazy-src', '')
+                                image_url = self._extract_image_from_element(element)
                         
                         # 기본 검증
                         if not title or not url or len(title) < 10:
@@ -167,16 +191,53 @@ class TheSunScraper:
                             break
                             
                     except Exception as e:
-                        logger.debug(f"The Sun 요소 파싱 실패: {e}")
+                        logger.debug("The Sun element parsing failed: {}".format(e))
                         continue
                 
                 if len(articles) >= limit:
                     break
                     
         except Exception as e:
-            logger.error(f"The Sun HTML 파싱 실패: {e}")
+            logger.error("The Sun HTML parsing failed: {}".format(e))
         
         return articles[:limit]
+    
+    def _extract_image_from_element(self, element) -> str:
+        """요소에서 이미지 URL 추출"""
+        image_url = ''
+        
+        try:
+            # 이미지 찾기 - 여러 방법으로 시도
+            img_selectors = [
+                'img[src*="thesun"]',  # The Sun 특화 이미지
+                'picture img',  # picture 태그 안의 이미지
+                'img[class*="hero"]',  # 히어로 이미지
+                'img[class*="main"]',  # 메인 이미지
+                'img[class*="featured"]',  # 피처드 이미지
+                'img[data-src]',  # lazy load 이미지
+                'img',  # 일반 이미지
+            ]
+            
+            for img_sel in img_selectors:
+                img_elem = element.select_one(img_sel)
+                if img_elem:
+                    # 다양한 속성에서 이미지 URL 시도
+                    image_url = (img_elem.get('src', '') or 
+                                img_elem.get('data-src', '') or 
+                                img_elem.get('data-lazy-src', '') or
+                                img_elem.get('data-original', '') or
+                                img_elem.get('srcset', '').split(',')[0].split(' ')[0])
+                    
+                    # 유효한 이미지 URL인지 확인
+                    if image_url and any(ext in image_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
+                        break
+                    else:
+                        image_url = ''
+        
+        except Exception as e:
+            logger.debug("Image extraction failed: {}".format(e))
+        
+        return image_url
     
     def _extract_date(self, url: str, text: str) -> str:
         """URL이나 텍스트에서 날짜 추출"""
@@ -186,7 +247,7 @@ class TheSunScraper:
             match = re.search(date_pattern, url)
             if match:
                 year, month, day = match.groups()
-                date_str = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                date_str = "{}-{}-{}".format(year, month.zfill(2), day.zfill(2))
                 date_obj = datetime.strptime(date_str, '%Y-%m-%d')
                 return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
             
@@ -204,7 +265,7 @@ class TheSunScraper:
                     return match.group(1)
                     
         except Exception as e:
-            logger.debug(f"날짜 추출 실패: {e}")
+            logger.debug("Date extraction failed: {}".format(e))
         
         return ''
     
