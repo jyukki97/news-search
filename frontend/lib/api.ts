@@ -36,6 +36,15 @@ export interface CategoriesResponse {
   descriptions: Record<string, string>
 }
 
+export interface TrendingResponse {
+  success: boolean
+  category: string
+  total_articles: number
+  active_sources: string[]
+  trending_by_source: { [key: string]: NewsArticle[] }
+  last_updated: string
+}
+
 // API 기본 URL - localhost 사용 (CORS 설정과 일치)
 const API_BASE_URL = 'http://localhost:8000'
 
@@ -51,9 +60,26 @@ async function apiRequest<T>(endpoint: string): Promise<T> {
 }
 
 // 뉴스 검색 (페이지네이션 지원)
-export async function searchNews(query: string, page: number = 1, perSiteLimit: number = 3): Promise<SearchResponse> {
+export async function searchNews(
+  query: string, 
+  page: number = 1, 
+  perSiteLimit: number = 3,
+  sources: string = 'all',
+  sort: string = 'date_desc',
+  dateFrom?: string,
+  dateTo?: string
+): Promise<SearchResponse> {
   const encodedQuery = encodeURIComponent(query)
-  return apiRequest<SearchResponse>(`/api/news/search?query=${encodedQuery}&page=${page}&per_site_limit=${perSiteLimit}`)
+  let url = `/api/news/search?query=${encodedQuery}&page=${page}&per_site_limit=${perSiteLimit}&sources=${sources}&sort=${sort}`
+  
+  if (dateFrom) {
+    url += `&date_from=${dateFrom}`
+  }
+  if (dateTo) {
+    url += `&date_to=${dateTo}`
+  }
+  
+  return apiRequest<SearchResponse>(url)
 }
 
 // 최신 뉴스 가져오기
@@ -64,4 +90,13 @@ export async function getLatestNews(category: string = 'top_stories', limit: num
 // 카테고리 목록 가져오기
 export async function getCategories(): Promise<CategoriesResponse> {
   return apiRequest<CategoriesResponse>('/api/news/categories')
+} 
+
+// 트렌딩 뉴스 가져오기
+export async function getTrendingNews(
+  category: string = 'all', 
+  limit: number = 5, 
+  sources: string = 'all'
+): Promise<TrendingResponse> {
+  return apiRequest<TrendingResponse>(`/api/news/trending?category=${category}&limit=${limit}&sources=${sources}`)
 } 

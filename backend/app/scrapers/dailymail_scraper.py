@@ -89,6 +89,49 @@ class DailyMailScraper:
                         continue
                     found_urls.add(href)
                     
+                    # 이미지 추출 - 링크 주변에서 이미지 찾기
+                    image_url = ''
+                    
+                    # 1. 링크의 부모 컨테이너에서 이미지 찾기
+                    parent = link.find_parent()
+                    while parent and not image_url:
+                        img_elem = parent.find('img')
+                        if img_elem:
+                            # 다양한 이미지 속성 확인
+                            for attr in ['src', 'data-src', 'data-lazy-src', 'data-original', 'data-img']:
+                                img_src = img_elem.get(attr, '')
+                                if img_src and self._is_valid_image_url(img_src):
+                                    image_url = img_src
+                                    break
+                        parent = parent.find_parent()
+                        # 너무 많이 올라가지 않도록 제한
+                        if parent and parent.name in ['body', 'html']:
+                            break
+                    
+                    # 2. 링크 근처의 형제 요소에서 이미지 찾기
+                    if not image_url:
+                        siblings = [link.find_previous_sibling(), link.find_next_sibling()]
+                        for sibling in siblings:
+                            if sibling:
+                                img_elem = sibling.find('img') if hasattr(sibling, 'find') else None
+                                if img_elem:
+                                    for attr in ['src', 'data-src', 'data-lazy-src', 'data-original']:
+                                        img_src = img_elem.get(attr, '')
+                                        if img_src and self._is_valid_image_url(img_src):
+                                            image_url = img_src
+                                            break
+                                if image_url:
+                                    break
+                    
+                    # 이미지 URL 정규화
+                    if image_url:
+                        if image_url.startswith('//'):
+                            image_url = 'https:' + image_url
+                        elif image_url.startswith('/'):
+                            image_url = self.base_url + image_url
+                        elif not image_url.startswith('http'):
+                            image_url = self.base_url + '/' + image_url
+                    
                     # 기본 기사 정보 생성
                     article = {
                         'title': title,
@@ -99,7 +142,7 @@ class DailyMailScraper:
                         'category': self._extract_category_from_url(href),
                         'scraped_at': datetime.now().isoformat(),
                         'relevance_score': 1,
-                        'image_url': ''
+                        'image_url': image_url
                     }
                     
                     articles.append(article)
@@ -115,6 +158,28 @@ class DailyMailScraper:
             logger.error(f"Daily Mail 홈페이지 HTML 파싱 실패: {e}")
         
         return articles[:limit]
+    
+    def _is_valid_image_url(self, url: str) -> bool:
+        """이미지 URL이 유효한지 확인"""
+        if not url:
+            return False
+        
+        # 기본 필터링
+        if url.startswith('data:') or 'placeholder' in url.lower() or 'logo' in url.lower():
+            return False
+        
+        # 이미지 확장자 확인
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
+        url_lower = url.lower()
+        
+        # URL에 이미지 확장자가 있는지 확인
+        has_extension = any(ext in url_lower for ext in valid_extensions)
+        
+        # 또는 이미지 관련 단어가 포함되어 있는지 확인
+        image_keywords = ['image', 'img', 'photo', 'picture', 'thumb']
+        has_keyword = any(keyword in url_lower for keyword in image_keywords)
+        
+        return has_extension or has_keyword
     
     def _extract_search_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:
         """HTML에서 검색 결과 추출"""
