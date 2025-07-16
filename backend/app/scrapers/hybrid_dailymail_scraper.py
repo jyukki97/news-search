@@ -667,4 +667,38 @@ class HybridDailyMailScraper:
     
     def get_latest_news(self, category: str = 'news', limit: int = 10) -> List[Dict]:
         """카테고리별 최신 뉴스 가져오기"""
-        return self._get_homepage_articles(limit) 
+        try:
+            # 홈페이지에서 최신 기사들을 가져옴
+            articles = self._get_homepage_articles(limit)
+            
+            # 결과가 적으면 검색으로 보완
+            if not articles or len(articles) < limit // 2:
+                logger.info("Daily Mail 최신 뉴스 결과 부족, 검색으로 보완")
+                
+                # 카테고리별 키워드 매핑
+                category_keywords = {
+                    'news': 'breaking news',
+                    'business': 'business economy',
+                    'sports': 'sports football',
+                    'technology': 'technology tech',
+                    'health': 'health',
+                    'entertainment': 'celebrity entertainment'
+                }
+                
+                keyword = category_keywords.get(category, 'breaking news')
+                search_articles = self.search_news(keyword, limit)
+                
+                # 기존 결과와 검색 결과를 합치되 중복 제거
+                if search_articles:
+                    existing_urls = {article.get('url') for article in articles} if articles else set()
+                    for article in search_articles:
+                        if article.get('url') not in existing_urls:
+                            articles.append(article)
+                            if len(articles) >= limit:
+                                break
+            
+            return articles[:limit]
+            
+        except Exception as e:
+            logger.error(f"Daily Mail 최신 뉴스 실패: {e}")
+            return [] 

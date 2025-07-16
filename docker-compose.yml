@@ -9,6 +9,7 @@ services:
       - ./backend:/app
     environment:
       - PYTHONPATH=/app
+      - MAX_WORKERS=2
     deploy:
       resources:
         limits:

@@ -1,10 +1,14 @@
 from fastapi import APIRouter, Query, HTTPException
-from typing import List, Dict, Optional
+from fastapi.responses import StreamingResponse
+from typing import List, Dict, Optional, Generator
 import logging
 import asyncio
 import concurrent.futures
 from datetime import datetime, timedelta
 import re
+import os
+import json
+import time
 
 from ..scrapers.bbc_scraper import BBCNewsScraper
 from ..scrapers.nypost_scraper import NYPostScraper
@@ -34,11 +38,45 @@ dailymail_scraper = HybridDailyMailScraper()
 scmp_scraper = HybridSCMPScraper()
 
 def run_scraper_search(scraper, query, limit):
-    """스크래퍼 검색을 실행하는 헬퍼 함수"""
+    """스크래퍼 검색을 실행하는 헬퍼 함수 (실제 검색용)"""
     try:
         return scraper.search_news(query, limit)
     except Exception as e:
         logger.error(f"{scraper.__class__.__name__} 검색 실패: {e}")
+        return []
+
+def run_scraper_trending(scraper, query, limit):
+    """스크래퍼 트렌딩 뉴스를 실행하는 헬퍼 함수 (트렌딩용)"""
+    try:
+        scraper_name = scraper.__class__.__name__
+        logger.info(f"{scraper_name} 트렌딩 뉴스 시작: query={query}, limit={limit}")
+        
+        # 모든 사이트에서 실제 최신/메인 뉴스 사용 (검색이 아닌 트렌딩)
+        if hasattr(scraper, 'get_latest_news'):
+            # 쿼리를 카테고리로 변환
+            category_mapping = {
+                'breaking news': 'news',
+                'sports': 'sport',
+                'business economy': 'business',
+                'technology tech': 'technology',
+                'entertainment celebrity': 'entertainment',
+                'health': 'health',
+                'world international': 'world'
+            }
+            category = category_mapping.get(query, 'news')
+            logger.info(f"{scraper_name}에서 get_latest_news 호출: category={category}")
+            
+            result = scraper.get_latest_news(category, limit)
+            logger.info(f"{scraper_name} 트렌딩 결과: {len(result) if result else 0}개 기사")
+            return result
+        else:
+            # get_latest_news가 없으면 검색으로 fallback
+            logger.info(f"{scraper_name}에서 search_news fallback 호출")
+            result = scraper.search_news(query, limit)
+            logger.info(f"{scraper_name} 검색 fallback 결과: {len(result) if result else 0}개 기사")
+            return result
+    except Exception as e:
+        logger.error(f"{scraper.__class__.__name__} 트렌딩 실패: {e}", exc_info=True)
         return []
 
 def filter_articles_by_date(articles: List[Dict], date_from: Optional[str], date_to: Optional[str]) -> List[Dict]:
@@ -160,7 +198,7 @@ def parse_article_date(date_string: str) -> Optional[datetime]:
 async def search_news(
     query: str = Query(..., description="검색할 키워드"),
     page: int = Query(1, ge=1, description="페이지 번호 (1부터 시작)"),
-    per_site_limit: int = Query(3, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
+    per_site_limit: int = Query(10, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
     sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)"),
     sort: str = Query("date_desc", description="정렬 방식 (date_desc: 최신순, date_asc: 과거순, relevance: 관련도순)"),
     date_from: Optional[str] = Query(None, description="시작 날짜 (YYYY-MM-DD 형식)"),
@@ -178,8 +216,10 @@ async def search_news(
         # 페이지네이션을 위해 더 많이 가져온 후 필요한 부분만 추출
         fetch_limit = page * per_site_limit
         
-        # 병렬로 여러 사이트에서 검색
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        # 병렬로 여러 사이트에서 검색 (최적화된 병렬 처리)
+        max_workers = int(os.getenv('MAX_WORKERS', '4'))  # 적절한 병렬성 유지
+        scraper_timeout = int(os.getenv('SCRAPER_TIMEOUT', '15'))  # 무료 서버를 고려해 넉넉하게
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 각 스크래퍼별로 Future 생성 (필터링 적용)
             futures = {}
             
@@ -207,10 +247,11 @@ async def search_news(
             articles_by_source = {}  # 출처별 그룹핑용
             active_sources = []
             
-            for future in concurrent.futures.as_completed(futures):
+            # 개별 future별로 타임아웃 적용 (더 안정적)
+            for future in futures:
                 source_name = futures[future]
                 try:
-                    articles = future.result()
+                    articles = future.result(timeout=scraper_timeout)
                     if articles:
                         # 페이지네이션 적용: 해당 페이지에 해당하는 기사만 추출
                         start_idx = (page - 1) * per_site_limit
@@ -222,6 +263,8 @@ async def search_news(
                             articles_by_source[source_name] = page_articles  # 출처별 저장
                             active_sources.append(source_name)
                             logger.info(f"{source_name}에서 페이지 {page}: {len(page_articles)}개 기사 수집")
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"{source_name} 검색 타임아웃 ({scraper_timeout}초)")
                 except Exception as e:
                     logger.error(f"{source_name} 검색 실패: {e}")
         
@@ -407,7 +450,7 @@ async def get_latest_news(
 @router.get("/trending")
 async def get_trending_news(
     category: str = Query("all", description="카테고리 (all, news, sports, business, technology, entertainment)"),
-    limit: int = Query(5, ge=1, le=20, description="사이트당 가져올 기사 수 (1-20)"),
+    limit: int = Query(2, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
     sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)")
 ) -> Dict:
     """각 사이트별 인기/트렌딩 뉴스 가져오기"""
@@ -431,38 +474,41 @@ async def get_trending_news(
         
         search_keyword = category_keywords.get(category.lower(), "breaking news")
         
-        # 병렬로 여러 사이트에서 트렌딩 뉴스 가져오기
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        # 병렬로 여러 사이트에서 트렌딩 뉴스 가져오기 (최적화된 병렬 처리)
+        max_workers = int(os.getenv('MAX_WORKERS', '4'))  # 적절한 병렬성 유지
+        scraper_timeout = int(os.getenv('SCRAPER_TIMEOUT', '15'))  # 무료 서버를 고려해 넉넉하게
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             
             if sources == "all" or "bbc" in requested_sources:
-                futures[executor.submit(run_scraper_search, bbc_scraper, search_keyword, limit)] = "BBC News"
+                futures[executor.submit(run_scraper_trending, bbc_scraper, search_keyword, limit)] = "BBC News"
             if sources == "all" or "vnexpress" in requested_sources:
-                futures[executor.submit(run_scraper_search, vnexpress_scraper, search_keyword, limit)] = "VN Express"
+                futures[executor.submit(run_scraper_trending, vnexpress_scraper, search_keyword, limit)] = "VN Express"
             if sources == "all" or "bangkokpost" in requested_sources:
-                futures[executor.submit(run_scraper_search, bangkokpost_scraper, search_keyword, limit)] = "Bangkok Post"
+                futures[executor.submit(run_scraper_trending, bangkokpost_scraper, search_keyword, limit)] = "Bangkok Post"
             if sources == "all" or "asahi" in requested_sources:
-                futures[executor.submit(run_scraper_search, asahi_scraper, search_keyword, limit)] = "Asahi Shimbun"
+                futures[executor.submit(run_scraper_trending, asahi_scraper, search_keyword, limit)] = "Asahi Shimbun"
             if sources == "all" or "yomiuri" in requested_sources:
-                futures[executor.submit(run_scraper_search, yomiuri_scraper, search_keyword, limit)] = "Yomiuri Shimbun"
+                futures[executor.submit(run_scraper_trending, yomiuri_scraper, search_keyword, limit)] = "Yomiuri Shimbun"
             if sources == "all" or "thesun" in requested_sources:
-                futures[executor.submit(run_scraper_search, thesun_scraper, search_keyword, limit)] = "The Sun"
+                futures[executor.submit(run_scraper_trending, thesun_scraper, search_keyword, limit)] = "The Sun"
             if sources == "all" or "nypost" in requested_sources:
-                futures[executor.submit(run_scraper_search, nypost_scraper, search_keyword, limit)] = "NY Post"
+                futures[executor.submit(run_scraper_trending, nypost_scraper, search_keyword, limit)] = "NY Post"
             if sources == "all" or "dailymail" in requested_sources:
-                futures[executor.submit(run_scraper_search, dailymail_scraper, search_keyword, limit)] = "Daily Mail"
+                futures[executor.submit(run_scraper_trending, dailymail_scraper, search_keyword, limit)] = "Daily Mail"
             if sources == "all" or "scmp" in requested_sources:
-                futures[executor.submit(run_scraper_search, scmp_scraper, search_keyword, limit)] = "SCMP"
+                futures[executor.submit(run_scraper_trending, scmp_scraper, search_keyword, limit)] = "SCMP"
             
             # 결과 수집 (사이트별로 분리)
             trending_by_source = {}
             active_sources = []
             total_articles = 0
             
-            for future in concurrent.futures.as_completed(futures):
+            # 개별 future별로 타임아웃 적용 (더 안정적)
+            for future in futures:
                 source_name = futures[future]
                 try:
-                    articles = future.result()
+                    articles = future.result(timeout=scraper_timeout)
                     if articles:
                         # 카테고리 필터링 (해당하는 경우)
                         if category.lower() != "all":
@@ -477,6 +523,8 @@ async def get_trending_news(
                         active_sources.append(source_name)
                         total_articles += len(articles[:limit])
                         logger.info(f"{source_name}에서 {len(articles[:limit])}개 트렌딩 뉴스 수집")
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"{source_name} 트렌딩 뉴스 타임아웃 ({scraper_timeout}초)")
                 except Exception as e:
                     logger.error(f"{source_name} 트렌딩 뉴스 수집 실패: {e}")
         
@@ -488,10 +536,191 @@ async def get_trending_news(
             "trending_by_source": trending_by_source,
             "last_updated": datetime.now().isoformat()
         }
-    
+        
     except Exception as e:
         logger.error(f"트렌딩 뉴스 가져오기 실패: {e}")
         raise HTTPException(status_code=500, detail=f"트렌딩 뉴스 가져오기 실패: {str(e)}")
+
+@router.get("/trending/stream")
+async def get_trending_news_stream(
+    category: str = Query("all", description="카테고리 (all, news, sports, business, technology, entertainment)"),
+    limit: int = Query(2, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
+    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)")
+) -> StreamingResponse:
+    """스트리밍 방식으로 각 사이트별 트렌딩 뉴스 실시간 전송"""
+    
+    def generate_streaming_response() -> Generator[str, None, None]:
+        try:
+            logger.info(f"스트리밍 트렌딩 뉴스 요청: 카테고리={category}, 사이트당={limit}개, 사이트={sources}")
+            
+            # 시작 메시지 전송
+            start_message = {
+                "type": "start",
+                "category": category,
+                "limit": limit,
+                "sources": sources,
+                "timestamp": datetime.now().isoformat()
+            }
+            yield f"data: {json.dumps(start_message)}\n\n"
+            
+            # 검색할 사이트 파싱
+            requested_sources = [s.strip().lower() for s in sources.split(",")] if sources != "all" else ["all"]
+            
+            # 카테고리별 키워드 매핑
+            category_keywords = {
+                "all": "breaking news",
+                "news": "breaking news", 
+                "sports": "sports",
+                "business": "business economy",
+                "technology": "technology tech",
+                "entertainment": "entertainment celebrity",
+                "health": "health",
+                "world": "world international"
+            }
+            
+            search_keyword = category_keywords.get(category.lower(), "breaking news")
+            
+            # 스크래퍼 매핑
+            scrapers_map = {
+                "bbc": (bbc_scraper, "BBC News"),
+                "vnexpress": (vnexpress_scraper, "VN Express"),
+                "bangkokpost": (bangkokpost_scraper, "Bangkok Post"),
+                "asahi": (asahi_scraper, "Asahi Shimbun"),
+                "yomiuri": (yomiuri_scraper, "Yomiuri Shimbun"),
+                "thesun": (thesun_scraper, "The Sun"),
+                "nypost": (nypost_scraper, "NY Post"),
+                "dailymail": (dailymail_scraper, "Daily Mail"),
+                "scmp": (scmp_scraper, "SCMP")
+            }
+            
+            # 선택된 스크래퍼들 필터링
+            selected_scrapers = []
+            for scraper_key, (scraper, name) in scrapers_map.items():
+                if sources == "all" or scraper_key in requested_sources:
+                    selected_scrapers.append((scraper, name, scraper_key))
+            
+            # 병렬 실행 설정
+            max_workers = int(os.getenv('MAX_WORKERS', '4'))
+            scraper_timeout = int(os.getenv('SCRAPER_TIMEOUT', '15'))  # 스트리밍이니까 여유롭게
+            
+            total_scrapers = len(selected_scrapers)
+            completed_scrapers = 0
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 모든 스크래퍼 실행
+                futures = {}
+                for scraper, name, key in selected_scrapers:
+                    future = executor.submit(run_scraper_trending, scraper, search_keyword, limit)
+                    futures[future] = {"name": name, "key": key}
+                
+                # 완료되는 대로 실시간 전송
+                for future in concurrent.futures.as_completed(futures, timeout=scraper_timeout+2):
+                    scraper_info = futures[future]
+                    source_name = scraper_info["name"]
+                    source_key = scraper_info["key"]
+                    
+                    try:
+                        articles = future.result(timeout=scraper_timeout)
+                        completed_scrapers += 1
+                        
+                        if articles:
+                            # 성공 메시지 전송
+                            success_message = {
+                                "type": "source_complete",
+                                "source": source_name,
+                                "source_key": source_key,
+                                "articles": articles[:limit],
+                                "article_count": len(articles[:limit]),
+                                "progress": {
+                                    "completed": completed_scrapers,
+                                    "total": total_scrapers,
+                                    "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                                },
+                                "timestamp": datetime.now().isoformat()
+                            }
+                            yield f"data: {json.dumps(success_message)}\n\n"
+                            logger.info(f"스트리밍: {source_name}에서 {len(articles[:limit])}개 기사 전송 완료")
+                        else:
+                            # 빈 결과 메시지 전송
+                            empty_message = {
+                                "type": "source_empty",
+                                "source": source_name,
+                                "source_key": source_key,
+                                "message": f"{source_name}에서 기사를 찾을 수 없습니다",
+                                "progress": {
+                                    "completed": completed_scrapers,
+                                    "total": total_scrapers,
+                                    "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                                },
+                                "timestamp": datetime.now().isoformat()
+                            }
+                            yield f"data: {json.dumps(empty_message)}\n\n"
+                            
+                    except concurrent.futures.TimeoutError:
+                        completed_scrapers += 1
+                        # 타임아웃 메시지 전송
+                        timeout_message = {
+                            "type": "source_timeout",
+                            "source": source_name,
+                            "source_key": source_key,
+                            "message": f"{source_name} 타임아웃 ({scraper_timeout}초)",
+                            "progress": {
+                                "completed": completed_scrapers,
+                                "total": total_scrapers,
+                                "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                            },
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        yield f"data: {json.dumps(timeout_message)}\n\n"
+                        logger.warning(f"스트리밍: {source_name} 타임아웃")
+                        
+                    except Exception as e:
+                        completed_scrapers += 1
+                        # 에러 메시지 전송
+                        error_message = {
+                            "type": "source_error",
+                            "source": source_name,
+                            "source_key": source_key,
+                            "message": f"{source_name} 오류: {str(e)}",
+                            "progress": {
+                                "completed": completed_scrapers,
+                                "total": total_scrapers,
+                                "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                            },
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        yield f"data: {json.dumps(error_message)}\n\n"
+                        logger.error(f"스트리밍: {source_name} 오류: {e}")
+            
+            # 완료 메시지 전송
+            complete_message = {
+                "type": "complete",
+                "message": "모든 사이트 검색 완료",
+                "total_completed": completed_scrapers,
+                "timestamp": datetime.now().isoformat()
+            }
+            yield f"data: {json.dumps(complete_message)}\n\n"
+            logger.info(f"스트리밍 트렌딩 뉴스 완료: {completed_scrapers}/{total_scrapers} 사이트 처리")
+            
+        except Exception as e:
+            # 전체 에러 메시지 전송
+            error_message = {
+                "type": "error",
+                "message": f"스트리밍 처리 중 오류 발생: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            yield f"data: {json.dumps(error_message)}\n\n"
+            logger.error(f"스트리밍 트렌딩 뉴스 실패: {e}")
+    
+    return StreamingResponse(
+        generate_streaming_response(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
+    )
 
 @router.get("/categories")
 async def get_categories() -> Dict:
@@ -511,4 +740,212 @@ async def get_categories() -> Dict:
         "success": True,
         "categories": list(categories.keys()),
         "descriptions": categories
-    } 
+    }
+
+@router.get("/search/stream")
+async def search_news_stream(
+    query: str = Query(..., description="검색할 키워드"),
+    page: int = Query(1, ge=1, description="페이지 번호 (1부터 시작)"),
+    per_site_limit: int = Query(10, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
+    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)"),
+    sort: str = Query("date_desc", description="정렬 방식 (date_desc: 최신순, date_asc: 과거순, relevance: 관련도순)")
+) -> StreamingResponse:
+    """스트리밍 방식으로 뉴스 검색 결과 실시간 전송"""
+    
+    def generate_search_streaming_response() -> Generator[str, None, None]:
+        try:
+            logger.info(f"스트리밍 검색 요청: query={query}, 페이지={page}, 사이트당={per_site_limit}개, 사이트={sources}")
+            
+            # 시작 메시지 전송
+            start_message = {
+                "type": "start",
+                "query": query,
+                "page": page,
+                "per_site_limit": per_site_limit,
+                "sources": sources,
+                "sort": sort,
+                "timestamp": datetime.now().isoformat()
+            }
+            yield f"data: {json.dumps(start_message)}\n\n"
+            
+            # 검색할 사이트 파싱
+            requested_sources = [s.strip().lower() for s in sources.split(",")] if sources != "all" else ["all"]
+            
+            # 각 사이트에서 페이지별로 가져올 기사 수 계산
+            fetch_limit = page * per_site_limit
+            
+            # 스크래퍼 매핑
+            scrapers_map = {
+                "bbc": (bbc_scraper, "BBC News"),
+                "vnexpress": (vnexpress_scraper, "VN Express"),
+                "bangkokpost": (bangkokpost_scraper, "Bangkok Post"),
+                "asahi": (asahi_scraper, "Asahi Shimbun"),
+                "yomiuri": (yomiuri_scraper, "Yomiuri Shimbun"),
+                "thesun": (thesun_scraper, "The Sun"),
+                "nypost": (nypost_scraper, "NY Post"),
+                "dailymail": (dailymail_scraper, "Daily Mail"),
+                "scmp": (scmp_scraper, "SCMP")
+            }
+            
+            # 선택된 스크래퍼들 필터링
+            selected_scrapers = []
+            for scraper_key, (scraper, name) in scrapers_map.items():
+                if sources == "all" or scraper_key in requested_sources:
+                    selected_scrapers.append((scraper, name, scraper_key))
+            
+            # 병렬 실행 설정
+            max_workers = int(os.getenv('MAX_WORKERS', '4'))
+            scraper_timeout = int(os.getenv('SCRAPER_TIMEOUT', '15'))  # 무료 서버를 고려해 넉넉하게
+            
+            total_scrapers = len(selected_scrapers)
+            completed_scrapers = 0
+            all_articles = []
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 모든 스크래퍼 실행
+                futures = {}
+                for scraper, name, key in selected_scrapers:
+                    future = executor.submit(run_scraper_search, scraper, query, fetch_limit)
+                    futures[future] = {"name": name, "key": key}
+                
+                # 완료되는 대로 실시간 전송
+                for future in futures:
+                    scraper_info = futures[future]
+                    source_name = scraper_info["name"]
+                    source_key = scraper_info["key"]
+                    
+                    try:
+                        articles = future.result(timeout=scraper_timeout)
+                        completed_scrapers += 1
+                        
+                        if articles:
+                            # 페이지네이션 적용
+                            start_idx = (page - 1) * per_site_limit
+                            end_idx = start_idx + per_site_limit
+                            page_articles = articles[start_idx:end_idx]
+                            
+                            if page_articles:
+                                all_articles.extend(page_articles)
+                                
+                                # 성공 메시지 전송
+                                success_message = {
+                                    "type": "source_complete",
+                                    "source": source_name,
+                                    "source_key": source_key,
+                                    "articles": page_articles,
+                                    "article_count": len(page_articles),
+                                    "progress": {
+                                        "completed": completed_scrapers,
+                                        "total": total_scrapers,
+                                        "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                                    },
+                                    "timestamp": datetime.now().isoformat()
+                                }
+                                yield f"data: {json.dumps(success_message)}\n\n"
+                                logger.info(f"스트리밍 검색: {source_name}에서 {len(page_articles)}개 기사 전송 완료")
+                            else:
+                                # 해당 페이지에 기사가 없는 경우
+                                empty_message = {
+                                    "type": "source_empty",
+                                    "source": source_name,
+                                    "source_key": source_key,
+                                    "message": f"{source_name}에서 해당 페이지에 기사가 없습니다",
+                                    "progress": {
+                                        "completed": completed_scrapers,
+                                        "total": total_scrapers,
+                                        "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                                    },
+                                    "timestamp": datetime.now().isoformat()
+                                }
+                                yield f"data: {json.dumps(empty_message)}\n\n"
+                        else:
+                            # 검색 결과가 없는 경우
+                            empty_message = {
+                                "type": "source_empty",
+                                "source": source_name,
+                                "source_key": source_key,
+                                "message": f"{source_name}에서 '{query}' 검색 결과가 없습니다",
+                                "progress": {
+                                    "completed": completed_scrapers,
+                                    "total": total_scrapers,
+                                    "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                                },
+                                "timestamp": datetime.now().isoformat()
+                            }
+                            yield f"data: {json.dumps(empty_message)}\n\n"
+                            
+                    except concurrent.futures.TimeoutError:
+                        completed_scrapers += 1
+                        # 타임아웃 메시지 전송
+                        timeout_message = {
+                            "type": "source_timeout",
+                            "source": source_name,
+                            "source_key": source_key,
+                            "message": f"{source_name} 검색 타임아웃 ({scraper_timeout}초)",
+                            "progress": {
+                                "completed": completed_scrapers,
+                                "total": total_scrapers,
+                                "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                            },
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        yield f"data: {json.dumps(timeout_message)}\n\n"
+                        logger.warning(f"스트리밍 검색: {source_name} 타임아웃")
+                        
+                    except Exception as e:
+                        completed_scrapers += 1
+                        # 에러 메시지 전송
+                        error_message = {
+                            "type": "source_error",
+                            "source": source_name,
+                            "source_key": source_key,
+                            "message": f"{source_name} 검색 오류: {str(e)}",
+                            "progress": {
+                                "completed": completed_scrapers,
+                                "total": total_scrapers,
+                                "percentage": round((completed_scrapers / total_scrapers) * 100, 1)
+                            },
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        yield f"data: {json.dumps(error_message)}\n\n"
+                        logger.error(f"스트리밍 검색: {source_name} 오류: {e}")
+            
+            # 정렬 적용
+            if all_articles:
+                if sort == "date_desc":
+                    all_articles.sort(key=lambda x: x.get('published_date', ''), reverse=True)
+                elif sort == "date_asc":
+                    all_articles.sort(key=lambda x: x.get('published_date', ''), reverse=False)
+                elif sort == "relevance":
+                    all_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+            
+            # 완료 메시지 전송
+            complete_message = {
+                "type": "complete",
+                "message": "모든 사이트 검색 완료",
+                "total_completed": completed_scrapers,
+                "total_articles": len(all_articles),
+                "timestamp": datetime.now().isoformat()
+            }
+            yield f"data: {json.dumps(complete_message)}\n\n"
+            logger.info(f"스트리밍 검색 완료: {completed_scrapers}/{total_scrapers} 사이트 처리, 총 {len(all_articles)}개 기사")
+            
+        except Exception as e:
+            # 전체 에러 메시지 전송
+            error_message = {
+                "type": "error",
+                "message": f"스트리밍 검색 처리 중 오류 발생: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            yield f"data: {json.dumps(error_message)}\n\n"
+            logger.error(f"스트리밍 검색 실패: {e}")
+    
+    return StreamingResponse(
+        generate_search_streaming_response(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
+    ) 

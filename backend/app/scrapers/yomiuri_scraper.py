@@ -306,8 +306,19 @@ class YomiuriScraper:
             articles = self._extract_search_results(response.text, limit)
             logger.info(f"Yomiuri 최신 뉴스 {len(articles)}개 수집")
             
+            # 결과가 없거나 적으면 search_news로 fallback
+            if not articles or len(articles) < limit // 2:
+                logger.info("Yomiuri 최신 뉴스 결과 부족, 검색으로 fallback")
+                return self.search_news('breaking news', limit)
+            
             return articles
             
         except Exception as e:
             logger.error(f"Yomiuri 최신 뉴스 가져오기 실패: {e}")
-            return [] 
+            # 404나 다른 오류 시 search_news로 fallback
+            logger.info("Yomiuri 최신 뉴스 실패, 검색으로 fallback")
+            try:
+                return self.search_news('breaking news', limit)
+            except Exception as fallback_error:
+                logger.error(f"Yomiuri fallback 검색도 실패: {fallback_error}")
+                return [] 

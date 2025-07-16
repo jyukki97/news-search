@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import SearchBar from '@/components/SearchBar'
 import NewsCard from '@/components/NewsCard'
-import { searchNews, getTrendingNews, NewsArticle, SearchResponse, TrendingResponse } from '@/lib/api'
+import { searchNews, getTrendingNews, getTrendingNewsStream, searchNewsStream, NewsArticle, SearchResponse, TrendingResponse, StreamingMessage, SearchStreamingMessage } from '@/lib/api'
 
 export default function Home() {
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null)
@@ -20,6 +20,25 @@ export default function Home() {
   const [showTrending, setShowTrending] = useState(true)
   const [showSiteFilter, setShowSiteFilter] = useState(false)
   const [sortOption, setSortOption] = useState('date_desc')
+  
+  // 뷰 모드 상태 추가 (트렌딩/검색 구별)
+  const [viewMode, setViewMode] = useState<'trending' | 'search'>('trending')
+  const [pendingSitesUpdate, setPendingSitesUpdate] = useState(false) // 필터 변경 감지
+  
+  // 스트리밍 관련 상태 (트렌딩용)
+  const [useStreamMode, setUseStreamMode] = useState(true) // 스트리밍 모드 사용 여부
+  const [streamingProgress, setStreamingProgress] = useState<{completed: number, total: number, percentage: number} | null>(null)
+  const [streamingBySource, setStreamingBySource] = useState<{[key: string]: NewsArticle[]}>({})
+  const [streamingActiveSources, setStreamingActiveSources] = useState<string[]>([])
+  const [streamingMessages, setStreamingMessages] = useState<string[]>([])
+  const [isStreamingComplete, setIsStreamingComplete] = useState(false)
+
+  // 검색 스트리밍 관련 상태
+  const [useSearchStreamMode, setUseSearchStreamMode] = useState(true) // 검색 스트리밍 모드 사용 여부
+  const [searchStreamingProgress, setSearchStreamingProgress] = useState<{completed: number, total: number, percentage: number} | null>(null)
+  const [searchStreamingBySource, setSearchStreamingBySource] = useState<{[key: string]: NewsArticle[]}>({})
+  const [searchStreamingMessages, setSearchStreamingMessages] = useState<string[]>([])
+  const [isSearchStreamingComplete, setIsSearchStreamingComplete] = useState(false)
 
   // 뉴스 사이트 목록 및 체크박스 상태
   const newsSites = [
@@ -76,15 +95,119 @@ export default function Home() {
     loadTrendingNews(selectedCategory)
   }
 
-  const loadTrendingNews = async (category: string) => {
+  const loadTrendingNews = async (category: string = 'all') => {
+    if (useStreamMode) {
+      loadTrendingNewsStream(category)
+    } else {
+      setTrendingLoading(true)
+      try {
+        const sourcesParam = getSelectedSourcesString()
+        const result = await getTrendingNews(category, 10, sourcesParam) // limit을 10개로 증가
+        setTrendingNews(result)
+        setSelectedCategory(category)
+      } catch (error) {
+        console.error('트렌딩 뉴스 로드 실패:', error)
+      } finally {
+        setTrendingLoading(false)
+      }
+    }
+  }
+
+  // 스트리밍 트렌딩 뉴스 로드
+  const loadTrendingNewsStream = async (category: string = 'all') => {
     setTrendingLoading(true)
+    setStreamingProgress(null)
+    setStreamingBySource({})
+    setStreamingActiveSources([])
+    setStreamingMessages([]) // 완전히 초기화
+    setIsStreamingComplete(false)
+    setSelectedCategory(category)
+    
+    // 이전 스트리밍이 있다면 잠시 대기
+    await new Promise(resolve => setTimeout(resolve, 100))
+    
+    const sourcesParam = getSelectedSourcesString()
+    
     try {
-      const result = await getTrendingNews(category, 3, 'all') // 사이트당 3개씩
-      setTrendingNews(result)
-      setSelectedCategory(category)
+      await getTrendingNewsStream(
+        category,
+        10, // 사이트당 10개씩으로 증가
+        sourcesParam,
+        // onMessage 콜백
+        (message: StreamingMessage) => {
+          console.log('스트리밍 메시지:', message)
+          
+          switch (message.type) {
+            case 'start':
+              setStreamingMessages(prev => [...prev, `🚀 트렌딩 뉴스 검색 시작 (카테고리: ${message.category})`])
+              break
+              
+            case 'source_complete':
+              if (message.source && message.articles) {
+                setStreamingBySource(prev => ({
+                  ...prev,
+                  [message.source as string]: message.articles || []
+                }))
+                setStreamingActiveSources(prev => [...prev, message.source as string])
+                setStreamingMessages(prev => [...prev, `✅ ${message.source}: ${message.article_count}개 기사`])
+              }
+              if (message.progress) {
+                setStreamingProgress(message.progress)
+              }
+              break
+              
+            case 'source_empty':
+              if (message.source) {
+                setStreamingMessages(prev => [...prev, `⚪ ${message.source}: 결과 없음`])
+              }
+              if (message.progress) {
+                setStreamingProgress(message.progress)
+              }
+              break
+              
+            case 'source_timeout':
+              if (message.source) {
+                setStreamingMessages(prev => [...prev, `⏰ ${message.source}: 타임아웃`])
+              }
+              if (message.progress) {
+                setStreamingProgress(message.progress)
+              }
+              break
+              
+            case 'source_error':
+              if (message.source) {
+                setStreamingMessages(prev => [...prev, `❌ ${message.source}: 오류 발생`])
+              }
+              if (message.progress) {
+                setStreamingProgress(message.progress)
+              }
+              break
+              
+            case 'complete':
+              setStreamingMessages(prev => [...prev, `🎉 모든 사이트 완료! 총 ${message.total_completed}개 기사`])
+              break
+              
+            case 'error':
+              setStreamingMessages(prev => [...prev, `💥 오류: ${message.message}`])
+              break
+          }
+        },
+        // onError 콜백
+        (error: Error) => {
+          console.error('스트리밍 오류:', error)
+          setStreamingMessages(prev => [...prev, `💥 스트리밍 오류: ${error.message}`])
+          setTrendingLoading(false)
+        },
+        // onComplete 콜백
+        () => {
+          console.log('스트리밍 완료')
+          setTrendingLoading(false)
+          setIsStreamingComplete(true)
+        }
+      )
     } catch (error) {
-      console.error('트렌딩 뉴스 로드 실패:', error)
-    } finally {
+      console.error('스트리밍 시작 실패:', error)
+      setStreamingMessages(prev => [...prev, `💥 스트리밍 시작 실패: ${error}`])
       setTrendingLoading(false)
     }
   }
@@ -162,6 +285,20 @@ export default function Home() {
     }
   }
 
+
+
+  // 트렌딩으로 돌아가기
+  const goBackToTrending = () => {
+    setViewMode('trending')
+    setSearchResult(null)
+    setQuery('')
+    setCurrentPage(1)
+    setSearchStreamingBySource({})
+    if (!trendingNews) {
+      loadTrendingNews(selectedCategory)
+    }
+  }
+
   const resetDateFilter = () => {
     setDateFrom('')
     setDateTo('')
@@ -185,14 +322,70 @@ export default function Home() {
 
   return (
     <div className="space-y-8">
+      {/* 토글 버튼 */}
+      <div className="bg-gray-50 p-4 rounded-lg">
+        <div className="flex items-center justify-center space-x-4">
+          <button
+            onClick={() => {
+              setViewMode('trending')
+              setQuery('')
+              setSearchResult(null)
+              setCurrentPage(1)
+              // 검색 스트리밍 상태 완전 초기화
+              setSearchStreamingBySource({})
+              setSearchStreamingMessages([])
+              setSearchStreamingProgress(null)
+              setIsSearchStreamingComplete(false)
+              // 트렌딩 스트리밍 상태 완전 초기화
+              setStreamingBySource({})
+              setStreamingMessages([])
+              setStreamingProgress(null)
+              setIsStreamingComplete(false)
+              setShowTrending(true)
+              // 잠시 대기 후 로드 (상태 초기화 완료 후)
+              setTimeout(() => {
+                loadTrendingNews(selectedCategory)
+              }, 50)
+            }}
+            className={`px-6 py-3 rounded-lg font-medium transition-colors ${
+              viewMode === 'trending'
+                ? 'bg-blue-500 text-white'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            🔥 트렌딩 뉴스
+          </button>
+          <button
+            onClick={() => {
+              setViewMode('search')
+              setShowTrending(false)
+              // 트렌딩 스트리밍 상태 완전 초기화
+              setStreamingBySource({})
+              setStreamingMessages([])
+              setStreamingProgress(null)
+              setIsStreamingComplete(false)
+              setTrendingLoading(false)
+            }}
+            className={`px-6 py-3 rounded-lg font-medium transition-colors ${
+              viewMode === 'search'
+                ? 'bg-blue-500 text-white'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            🔍 뉴스 검색
+          </button>
+        </div>
+      </div>
+
       {/* 검색 섹션 */}
-      <div className="text-center">
-        <h2 className="text-3xl font-bold text-gray-900 mb-4">
-          글로벌 뉴스 검색
-        </h2>
-        <p className="text-gray-600 mb-6">
-          9개 글로벌 뉴스 사이트에서 실시간으로 뉴스를 검색하세요
-        </p>
+      {viewMode === 'search' && (
+        <div className="text-center">
+          <h2 className="text-3xl font-bold text-gray-900 mb-4">
+            글로벌 뉴스 검색
+          </h2>
+          <p className="text-gray-600 mb-6">
+            9개 글로벌 뉴스 사이트에서 실시간으로 뉴스를 검색하세요
+          </p>
         
         {/* 검색창과 사이트 필터 */}
         <div className="flex flex-col lg:flex-row items-start lg:items-center gap-6 max-w-6xl mx-auto">
@@ -347,10 +540,11 @@ export default function Home() {
             </div>
           )}
         </div>
-      </div>
+        </div>
+      )}
 
       {/* 트렌딩 뉴스 대시보드 */}
-      {!query && showTrending && (
+      {viewMode === 'trending' && (
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <h3 className="text-2xl font-bold text-gray-900">🔥 트렌딩 뉴스</h3>
@@ -388,13 +582,91 @@ export default function Home() {
             ))}
           </div>
 
-          {/* 트렌딩 뉴스 내용 */}
-          {trendingLoading ? (
-            <div className="text-center py-8">
-              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-              <p className="mt-2 text-gray-600">트렌딩 뉴스 로딩 중...</p>
-            </div>
-          ) : trendingNews && trendingNews.total_articles > 0 ? (
+          {/* 스트리밍 모드 토글 */}
+          <div className="flex items-center justify-center mb-4">
+            <label className="flex items-center space-x-2 text-sm">
+              <input
+                type="checkbox"
+                checked={useStreamMode}
+                onChange={(e) => setUseStreamMode(e.target.checked)}
+                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+              />
+              <span className="text-gray-700">
+                ⚡ 스트리밍 모드 (실시간 업데이트)
+              </span>
+            </label>
+          </div>
+
+                  {/* 트렌딩 뉴스 내용 */}
+        {(trendingLoading && useStreamMode) || (useStreamMode && Object.keys(streamingBySource).length > 0) ? (
+          <div className="space-y-6">
+            {/* 스트리밍 진행률 */}
+            {streamingProgress && trendingLoading && (
+              <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-blue-800">
+                    🔍 진행상황: {streamingProgress.completed}/{streamingProgress.total} 사이트
+                  </span>
+                  <span className="text-sm text-blue-600">
+                    {streamingProgress.percentage}%
+                  </span>
+                </div>
+                <div className="w-full bg-blue-200 rounded-full h-2">
+                  <div 
+                    className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-out"
+                    style={{ width: `${streamingProgress.percentage}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
+
+            {/* 스트리밍 메시지 */}
+            {streamingMessages.length > 0 && (
+              <div className="bg-gray-50 p-4 rounded-lg border max-h-40 overflow-y-auto">
+                <h4 className="text-sm font-medium text-gray-800 mb-2">📊 트렌딩 로그</h4>
+                <div className="space-y-1">
+                  {streamingMessages.slice(-10).map((msg, index) => (
+                    <div key={index} className="text-xs text-gray-600">
+                      {msg}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 스트리밍 결과 (사이트별로 실시간 표시) */}
+            {Object.keys(streamingBySource).length > 0 && (
+              <div className="space-y-8">
+                {Object.entries(streamingBySource).map(([source, articles]) => (
+                  <div key={source} className="space-y-4 animate-fade-in">
+                    {/* 출처 헤더 */}
+                    <div className="border-b border-gray-200 pb-2">
+                      <h4 className="text-lg font-semibold text-gray-800 flex items-center">
+                        <span className="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span>
+                        📰 {source}
+                        <span className="ml-2 px-2 py-1 bg-orange-100 text-orange-700 text-xs rounded-full">
+                          {articles.length}개
+                        </span>
+                      </h4>
+                    </div>
+                    
+                    {/* 출처별 기사 그리드 */}
+                    <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                      {articles.map((article: NewsArticle, index: number) => (
+                        <NewsCard key={`${source}-trending-${index}`} article={article} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : trendingLoading ? (
+          <div className="text-center py-8">
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <p className="mt-2 text-gray-600">트렌딩 뉴스 로딩 중...</p>
+          </div>
+        ) : trendingNews && trendingNews.total_articles > 0 ? (
             <div className="space-y-8">
               {Object.entries(trendingNews.trending_by_source).map(([source, articles]) => (
                 <div key={source} className="space-y-4">
@@ -436,18 +708,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* 검색 결과 숨김/표시 버튼 */}
-      {!query && !showTrending && (
-        <div className="text-center">
-          <button
-            onClick={() => setShowTrending(true)}
-            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-          >
-            🔥 트렌딩 뉴스 보기
-          </button>
-        </div>
-      )}
-
       {/* 로딩 상태 */}
       {loading && (
         <div className="text-center py-8">
@@ -457,9 +717,110 @@ export default function Home() {
       )}
 
       {/* 검색 결과 */}
-      {searchResult && !loading && (
+      {(searchResult || (useSearchStreamMode && Object.keys(searchStreamingBySource).length > 0)) && (
         <div className="space-y-6">
-          {searchResult.total_articles > 0 ? (
+          {/* 검색 스트리밍 모드 토글 */}
+          <div className="flex items-center justify-center mb-4">
+            <label className="flex items-center space-x-2 text-sm">
+              <input
+                type="checkbox"
+                checked={useSearchStreamMode}
+                onChange={(e) => setUseSearchStreamMode(e.target.checked)}
+                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+              />
+              <span className="text-gray-700">
+                ⚡ 검색 스트리밍 모드 (실시간 검색)
+              </span>
+            </label>
+          </div>
+
+          {/* 검색 스트리밍 결과 */}
+          {useSearchStreamMode ? (
+            <div className="space-y-6">
+              {/* 검색 스트리밍 헤더 */}
+              <div className="bg-gray-50 p-4 rounded-lg border">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
+                  <div>
+                    <div className="flex items-center space-x-3 mb-2">
+                      <h3 className="text-lg font-semibold text-gray-800">
+                        🔍 검색 결과 (실시간)
+                      </h3>
+                      <button
+                        onClick={goBackToTrending}
+                        className="px-3 py-1 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
+                      >
+                        📈 트렌딩으로 돌아가기
+                      </button>
+                    </div>
+                    <div className="text-sm text-gray-600">
+                      키워드: <strong>"{query}"</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 검색 스트리밍 진행률 - loading 중이거나 진행률이 있을 때 표시 */}
+              {(searchStreamingProgress || loading) && (
+                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-green-800">
+                      🔍 검색 진행상황: {searchStreamingProgress?.completed || 0}/{searchStreamingProgress?.total || 1} 사이트
+                    </span>
+                    <span className="text-sm text-green-600">
+                      {searchStreamingProgress?.percentage || 0}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-green-200 rounded-full h-2">
+                    <div 
+                      className="bg-green-600 h-2 rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${searchStreamingProgress?.percentage || 0}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+
+              {/* 검색 스트리밍 메시지 - 메시지가 있을 때 표시 */}
+              {searchStreamingMessages.length > 0 && (
+                <div className="bg-gray-50 p-4 rounded-lg border max-h-40 overflow-y-auto">
+                  <h4 className="text-sm font-medium text-gray-800 mb-2">🔍 검색 로그</h4>
+                  <div className="space-y-1">
+                    {searchStreamingMessages.slice(-10).map((msg, index) => (
+                      <div key={index} className="text-xs text-gray-600">
+                        {msg}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 검색 스트리밍 결과 (사이트별로 실시간 표시) */}
+              {Object.keys(searchStreamingBySource).length > 0 && (
+                <div className="space-y-8">
+                  {Object.entries(searchStreamingBySource).map(([source, articles]) => (
+                    <div key={source} className="space-y-4 animate-fade-in">
+                      {/* 출처 헤더 */}
+                      <div className="border-b border-gray-200 pb-2">
+                        <h4 className="text-lg font-semibold text-gray-800 flex items-center">
+                          <span className="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span>
+                          🔍 {source}
+                          <span className="ml-2 px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">
+                            {articles.length}개
+                          </span>
+                        </h4>
+                      </div>
+                      
+                      {/* 출처별 기사 그리드 */}
+                      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                        {articles.map((article: NewsArticle, index: number) => (
+                          <NewsCard key={`${source}-search-streaming-${index}`} article={article} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : searchResult && searchResult.total_articles > 0 ? (
             <div className="space-y-6">
               {/* 검색 결과 헤더 */}
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
@@ -602,19 +963,6 @@ export default function Home() {
       )}
 
       {/* 초기 안내 */}
-      {!query && !showTrending && (
-        <div className="text-center py-12">
-          <div className="text-gray-400 text-lg">
-            위의 검색창에 키워드를 입력해보세요
-          </div>
-          <div className="mt-4 text-sm text-gray-500">
-            예: climate change, technology, business
-          </div>
-          <div className="mt-6 text-xs text-gray-400">
-            💡 선택된 뉴스 사이트에서 페이지별로 3개씩 기사를 가져옵니다
-          </div>
-        </div>
-      )}
     </div>
   )
 } 

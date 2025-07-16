@@ -302,4 +302,19 @@ class TheSunScraper:
         }
         
         keyword = category_keywords.get(category, 'news')
-        return self.search_news(keyword, limit) 
+        
+        try:
+            # search_news를 호출해서 결과를 얻음
+            articles = self.search_news(keyword, limit)
+            
+            # 결과가 없으면 더 일반적인 키워드로 재시도
+            if not articles:
+                logger.info(f"The Sun {keyword} 검색 결과 없음, 'breaking news'로 재시도")
+                articles = self.search_news('breaking news', limit)
+            
+            return articles
+            
+        except Exception as e:
+            logger.error(f"The Sun 최신 뉴스 실패: {e}")
+            # 최후의 수단으로 빈 리스트 반환
+            return [] 

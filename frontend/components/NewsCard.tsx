@@ -81,7 +81,13 @@ export default function NewsCard({ article }: NewsCardProps) {
         </div>
 
         {/* 제목 */}
-        <h3 className="text-lg font-semibold text-gray-900 mb-3 line-clamp-2 leading-tight">
+        <h3 className="text-lg font-semibold text-gray-900 mb-3 leading-tight" 
+            style={{
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden'
+            }}>
           <a 
             href={article.url} 
             target="_blank" 
@@ -94,7 +100,13 @@ export default function NewsCard({ article }: NewsCardProps) {
 
         {/* 요약 */}
         {article.summary && (
-          <p className="text-gray-600 text-sm mb-4 line-clamp-3">
+          <p className="text-gray-600 text-sm mb-4" 
+             style={{
+               display: '-webkit-box',
+               WebkitLineClamp: 3,
+               WebkitBoxOrient: 'vertical',
+               overflow: 'hidden'
+             }}>
             {truncateSummary(article.summary)}
           </p>
         )}
