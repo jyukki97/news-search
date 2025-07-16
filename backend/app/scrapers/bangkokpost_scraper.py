@@ -30,10 +30,11 @@ class BangkokPostScraper:
         try:
             logger.info(f"Bangkok Post 검색: {query}")
             
-            # Bangkok Post 검색 URL 패턴
+            # Bangkok Post 검색 URL 패턴 (올바른 검색 도메인 사용)
             search_urls = [
+                f"https://search.bangkokpost.com/search/result?category=all&q={query}",
+                f"https://search.bangkokpost.com/search/result?q={query}",
                 f"https://www.bangkokpost.com/search?q={query}",
-                f"https://search.bangkokpost.com/search?q={query}",
                 f"https://www.bangkokpost.com/search/result?q={query}",
                 f"https://www.bangkokpost.com/?s={query}"
             ]
@@ -70,18 +71,18 @@ class BangkokPostScraper:
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Bangkok Post 기사 구조 찾기
+            # Bangkok Post 검색 결과 특화 구조 찾기
             article_selectors = [
+                'h3',  # 방콕 포스트 검색 결과는 h3 태그에 있음
+                '.col-md-12',  # 검색 결과 컨테이너
+                '.search-result-item',
+                'div[class*="search"]',
+                'div[class*="result"]',
                 'article',
                 '.article',
                 '.news-item',
                 '.story',
-                '.post',
-                '.search-result',
-                '[class*="article"]',
-                '[class*="news"]',
-                '[class*="story"]',
-                '[class*="item"]'
+                '.post'
             ]
             
             found_items = set()
@@ -95,26 +96,51 @@ class BangkokPostScraper:
                 
                 for element in elements:
                     try:
-                        # 제목 찾기
+                        # 방콕 포스트 특화 제목/URL 추출
                         title = ''
-                        title_selectors = ['h1', 'h2', 'h3', 'h4', '.title', '.headline', 'a']
+                        url = ''
                         
-                        for title_sel in title_selectors:
-                            title_elem = element.find(title_sel)
-                            if title_elem:
-                                title = title_elem.get_text(strip=True)
-                                if len(title) > 15:  # 최소 제목 길이
-                                    break
+                        # h3 태그인 경우 (검색 결과 제목)
+                        if element.name == 'h3':
+                            link_elem = element.find('a', href=True)
+                            if link_elem:
+                                title = link_elem.get_text(strip=True)
+                                url = link_elem.get('href')
+                        else:
+                            # 다른 컨테이너 내에서 h3 찾기
+                            h3_elem = element.find('h3')
+                            if h3_elem:
+                                link_elem = h3_elem.find('a', href=True)
+                                if link_elem:
+                                    title = link_elem.get_text(strip=True)
+                                    url = link_elem.get('href')
+                            
+                            # h3이 없으면 일반적인 방법으로 찾기
+                            if not title:
+                                title_selectors = ['h1', 'h2', 'h4', '.title', '.headline', 'a']
+                                for title_sel in title_selectors:
+                                    title_elem = element.find(title_sel)
+                                    if title_elem:
+                                        title = title_elem.get_text(strip=True)
+                                        if len(title) > 15:
+                                            break
+                                
+                                if not url:
+                                    link_elem = element.find('a', href=True)
+                                    if link_elem:
+                                        url = link_elem.get('href')
                         
                         if not title or len(title) < 15:
                             continue
                         
-                        # URL 찾기
-                        url = ''
-                        link_elem = element.find('a', href=True)
-                        if link_elem:
-                            url = link_elem.get('href')
-                            
+                        # 방콕 포스트 tracking URL 처리
+                        if url and 'track/visitAndRedirect' in url:
+                            # URL에서 실제 주소 추출
+                            import urllib.parse
+                            if 'href=' in url:
+                                actual_url = url.split('href=')[1].split('&')[0]
+                                url = urllib.parse.unquote(actual_url)
+                        
                         # URL 정규화
                         if url and not url.startswith('http'):
                             if url.startswith('/'):
@@ -130,30 +156,43 @@ class BangkokPostScraper:
                             continue
                         found_items.add(url)
                         
-                        # 요약 찾기
+                        # 방콕 포스트 요약 찾기
                         summary = ''
-                        summary_selectors = ['p', '.excerpt', '.summary', '.description', '.lead', '.intro']
                         
-                        for sum_sel in summary_selectors:
-                            sum_elem = element.find(sum_sel)
-                            if sum_elem:
-                                sum_text = sum_elem.get_text(strip=True)
-                                if len(sum_text) > 30 and not sum_text.startswith('Bangkok'):  # 최소 요약 길이
-                                    summary = sum_text
-                                    break
-                        
-                        # 이미지 찾기
-                        image_url = ''
-                        img_elem = element.find('img')
-                        if img_elem:
-                            image_url = img_elem.get('src', '') or img_elem.get('data-src', '') or img_elem.get('data-lazy-src', '')
+                        # h3 태그인 경우, 다음 형제 요소들에서 요약 찾기
+                        if element.name == 'h3':
+                            next_element = element.find_next_sibling()
+                            while next_element and not summary:
+                                if next_element.name == 'p':
+                                    sum_text = next_element.get_text(strip=True)
+                                    # 날짜나 메타 정보 제외하고 실제 기사 내용만
+                                    # » 기호로 시작하는 요약문은 포함
+                                    if sum_text.startswith('»'):
+                                        sum_text = sum_text[1:].strip()  # » 기호 제거
+                                    
+                                    if (len(sum_text) > 50 and 
+                                        not sum_text.startswith('Published on') and
+                                        'bangkokpost.com' not in sum_text.lower() and
+                                        not sum_text.startswith('Bangkok')):
+                                        summary = sum_text
+                                        break
+                                next_element = next_element.find_next_sibling()
+                        else:
+                            # 일반적인 요약 찾기
+                            summary_selectors = ['p', '.excerpt', '.summary', '.description', '.lead', '.intro']
                             
-                            # 이미지 URL 정규화
-                            if image_url and not image_url.startswith('http'):
-                                if image_url.startswith('//'):
-                                    image_url = 'https:' + image_url
-                                elif image_url.startswith('/'):
-                                    image_url = self.base_url + image_url
+                            for sum_sel in summary_selectors:
+                                sum_elem = element.find(sum_sel)
+                                if sum_elem:
+                                    sum_text = sum_elem.get_text(strip=True)
+                                    if (len(sum_text) > 30 and 
+                                        not sum_text.startswith('Bangkok') and
+                                        not sum_text.startswith('Published on')):
+                                        summary = sum_text
+                                        break
+                        
+                        # 방콕 포스트 이미지 추출
+                        image_url = self._extract_bangkokpost_image(element, url)
                         
                         # 날짜 추출
                         published_date = self._extract_date(element, url)
@@ -246,6 +285,157 @@ class BangkokPostScraper:
         
         # 기본값: 현재 시간
         return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    
+    def _extract_bangkokpost_image(self, element, url: str) -> str:
+        """방콕 포스트 기사에서 이미지 추출 또는 기본 이미지 제공"""
+        image_url = ''
+        
+        try:
+            # 1. 요소에서 이미지 찾기
+            img_elem = element.find('img')
+            if img_elem:
+                potential_imgs = [
+                    img_elem.get('src', ''),
+                    img_elem.get('data-src', ''),
+                    img_elem.get('data-lazy-src', ''),
+                    img_elem.get('data-original', '')
+                ]
+                
+                for img_src in potential_imgs:
+                    if img_src and self._is_valid_bangkokpost_image(img_src):
+                        image_url = img_src
+                        break
+            
+            # 2. 주변 요소에서 이미지 찾기
+            if not image_url:
+                # 형제 요소들에서 이미지 찾기
+                siblings = [element.find_previous_sibling(), element.find_next_sibling()]
+                for sibling in siblings:
+                    if sibling and hasattr(sibling, 'find'):
+                        img_elem = sibling.find('img')
+                        if img_elem:
+                            for attr in ['src', 'data-src', 'data-lazy-src']:
+                                img_src = img_elem.get(attr, '')
+                                if img_src and self._is_valid_bangkokpost_image(img_src):
+                                    image_url = img_src
+                                    break
+                        if image_url:
+                            break
+            
+            # 3. URL 정규화
+            if image_url:
+                if not image_url.startswith('http'):
+                    if image_url.startswith('//'):
+                        image_url = 'https:' + image_url
+                    elif image_url.startswith('/'):
+                        image_url = self.base_url + image_url
+            
+            # 4. 실제 기사 페이지에서 이미지 추출 시도
+            if not image_url:
+                image_url = self._extract_image_from_article_page(url)
+                
+        except Exception as e:
+            logger.debug("방콕 포스트 이미지 추출 실패: {}".format(e))
+        
+        return image_url
+    
+    def _extract_image_from_article_page(self, article_url: str) -> str:
+        """실제 기사 페이지에서 메인 이미지 추출"""
+        try:
+            response = requests.get(article_url, headers=self.headers, timeout=5)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Bangkok Post 기사 페이지의 메인 이미지 찾기
+                selectors = [
+                    'meta[property="og:image"]',
+                    'meta[name="twitter:image"]',
+                    '.story-image img',
+                    '.article-image img', 
+                    '.hero-image img',
+                    'figure img',
+                    '.main-image img',
+                    'img[src*="static.bangkokpost.com"]'
+                ]
+                
+                for selector in selectors:
+                    elem = soup.select_one(selector)
+                    if elem:
+                        img_url = elem.get('content') or elem.get('src') or elem.get('data-src')
+                        if img_url and self._is_valid_bangkokpost_article_image(img_url):
+                            # URL 정규화
+                            if not img_url.startswith('http'):
+                                if img_url.startswith('//'):
+                                    img_url = 'https:' + img_url
+                                elif img_url.startswith('/'):
+                                    img_url = self.base_url + img_url
+                            return img_url
+                            
+        except Exception as e:
+            logger.debug("기사 페이지에서 이미지 추출 실패: {}".format(e))
+        
+        return ''
+    
+    def _is_valid_bangkokpost_article_image(self, url: str) -> bool:
+        """기사 페이지에서 추출한 이미지가 유효한 실제 이미지인지 확인"""
+        if not url:
+            return False
+        
+        url_lower = url.lower()
+        
+        # Bangkok Post 로고나 아이콘들 제외
+        exclude_patterns = [
+            'bp-business.png', 'bp-news.png', 'bp-sports.png', 'bp-tech.png',
+            'bangkokpost.png', '/icons/', '/logo', 'favicon',
+            'sprite', 'loading', 'placeholder', 'blank.gif',
+            'alert.svg', 'icon-close.svg'
+        ]
+        
+        for pattern in exclude_patterns:
+            if pattern in url_lower:
+                return False
+        
+        # 데이터 URL 제외
+        if url.startswith('data:'):
+            return False
+        
+        # 유효한 이미지 패턴 확인
+        valid_patterns = [
+            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp',
+            'static.bangkokpost.com',  # Bangkok Post CDN
+            '/images/', '/photos/', '/pictures/'
+        ]
+        
+        return any(pattern in url_lower for pattern in valid_patterns)
+    
+    def _is_valid_bangkokpost_image(self, url: str) -> bool:
+        """방콕 포스트 이미지 URL이 유효한지 확인"""
+        if not url:
+            return False
+        
+        url_lower = url.lower()
+        
+        # 제외할 이미지들
+        exclude_patterns = [
+            'logo', 'alert.svg', 'icon-close.svg', 'favicon',
+            'sprite', 'loading', 'placeholder', 'blank.gif'
+        ]
+        
+        for pattern in exclude_patterns:
+            if pattern in url_lower:
+                return False
+        
+        # 데이터 URL 제외
+        if url.startswith('data:'):
+            return False
+        
+        # 유효한 이미지 확장자나 방콕 포스트 이미지 패턴 확인
+        valid_patterns = [
+            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp',
+            'bangkokpost.com', 'static.bangkokpost.com'
+        ]
+        
+        return any(pattern in url_lower for pattern in valid_patterns)
     
     def _extract_category_from_url(self, url: str) -> str:
         """URL에서 카테고리 추출"""

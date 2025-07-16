@@ -19,18 +19,19 @@ export default function Home() {
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [showTrending, setShowTrending] = useState(true)
   const [showSiteFilter, setShowSiteFilter] = useState(false)
+  const [sortOption, setSortOption] = useState('date_desc')
 
   // 뉴스 사이트 목록 및 체크박스 상태
   const newsSites = [
-    { id: 'bbc', name: 'BBC News', icon: '🇬🇧' },
-    { id: 'thesun', name: 'The Sun', icon: '☀️' },
-    { id: 'nypost', name: 'NY Post', icon: '🗞️' },
-    { id: 'dailymail', name: 'Daily Mail', icon: '📧' },
-    { id: 'scmp', name: 'SCMP', icon: '🇭🇰' },
-    { id: 'vnexpress', name: 'VN Express', icon: '🇻🇳' },
-    { id: 'bangkokpost', name: 'Bangkok Post', icon: '🇹🇭' },
-    { id: 'asahi', name: 'Asahi Shimbun', icon: '🇯🇵' },
-    { id: 'yomiuri', name: 'Yomiuri Shimbun', icon: '📰' }
+    { id: 'bbc', name: 'BBC News', icon: '🇬🇧', isSlow: false },
+    { id: 'thesun', name: 'The Sun', icon: '☀️', isSlow: false },
+    { id: 'nypost', name: 'NY Post', icon: '🗞️', isSlow: true },
+    { id: 'dailymail', name: 'Daily Mail', icon: '📧', isSlow: true },
+    { id: 'scmp', name: 'SCMP', icon: '🇭🇰', isSlow: true },
+    { id: 'vnexpress', name: 'VN Express', icon: '🇻🇳', isSlow: false },
+    { id: 'bangkokpost', name: 'Bangkok Post', icon: '🇹🇭', isSlow: false },
+    { id: 'asahi', name: 'Asahi Shimbun', icon: '🇯🇵', isSlow: false },
+    { id: 'yomiuri', name: 'Yomiuri Shimbun', icon: '📰', isSlow: false }
   ]
 
   const [selectedSites, setSelectedSites] = useState<{[key: string]: boolean}>(() => {
@@ -134,7 +135,7 @@ export default function Home() {
         page, 
         3, // 각 사이트에서 3개씩
         sourcesParam, // 선택된 사이트들만
-        'date_desc', // sort
+        sortOption, // 선택된 정렬 방식
         dateFrom || undefined,
         dateTo || undefined
       )
@@ -234,9 +235,14 @@ export default function Home() {
                         onChange={() => toggleSite(site.id)}
                         className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
                       />
-                      <span className="text-sm text-gray-700 flex items-center">
+                      <span className="text-sm text-gray-700 flex items-center flex-1">
                         <span className="mr-1">{site.icon}</span>
                         {site.name}
+                        {site.isSlow && (
+                          <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-600 text-xs rounded font-medium">
+                            느림
+                          </span>
+                        )}
                       </span>
                     </label>
                   ))}
@@ -248,19 +254,6 @@ export default function Home() {
           {/* 검색창 */}
           <div className="flex-1 w-full">
             <SearchBar onSearch={(query) => handleSearch(query)} loading={loading} />
-            
-            {/* 선택된 사이트 요약 */}
-            <div className="mt-2 text-sm text-gray-600 text-center">
-              {selectedSitesCount > 0 ? (
-                selectedSitesCount === newsSites.length ? (
-                  <span>📰 모든 사이트에서 검색</span>
-                ) : (
-                  <span>📰 {selectedSitesCount}개 사이트에서 검색</span>
-                )
-              ) : (
-                <span className="text-red-500">⚠️ 검색할 사이트를 선택해주세요</span>
-              )}
-            </div>
           </div>
         </div>
         
@@ -275,26 +268,26 @@ export default function Home() {
           
           {showDateFilter && (
             <div className="flex flex-col sm:flex-row items-center justify-center space-y-2 sm:space-y-0 sm:space-x-4 p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center space-x-2">
-                <label htmlFor="date-from" className="text-sm font-medium text-gray-700">
-                  시작:
+              <div className="flex flex-col space-y-1">
+                <label htmlFor="date-from" className="text-xs font-medium text-gray-600">
+                  시작 날짜 및 시간:
                 </label>
                 <input
                   id="date-from"
-                  type="date"
+                  type="datetime-local"
                   value={dateFrom}
                   onChange={(e) => setDateFrom(e.target.value)}
                   className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               
-              <div className="flex items-center space-x-2">
-                <label htmlFor="date-to" className="text-sm font-medium text-gray-700">
-                  종료:
+              <div className="flex flex-col space-y-1">
+                <label htmlFor="date-to" className="text-xs font-medium text-gray-600">
+                  종료 날짜 및 시간:
                 </label>
                 <input
                   id="date-to"
-                  type="date"
+                  type="datetime-local"
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
                   className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -319,17 +312,37 @@ export default function Home() {
           )}
           
           {/* 활성 필터 표시 */}
-          {(dateFrom || dateTo) && (
-            <div className="text-sm text-blue-600">
-              📅 날짜 필터 활성: 
-              {dateFrom && ` ${dateFrom}부터`}
-              {dateTo && ` ${dateTo}까지`}
-              <button
-                onClick={resetDateFilter}
-                className="ml-2 text-red-500 hover:text-red-700"
-              >
-                ✕
-              </button>
+          {(dateFrom || dateTo || sortOption !== 'date_desc') && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              {(dateFrom || dateTo) && (
+                <div className="flex items-center px-2 py-1 bg-blue-100 text-blue-700 rounded-md">
+                  📅 날짜 필터: 
+                  {dateFrom && ` ${dateFrom.replace('T', ' ')}부터`}
+                  {dateTo && ` ${dateTo.replace('T', ' ')}까지`}
+                  <button
+                    onClick={resetDateFilter}
+                    className="ml-2 text-red-500 hover:text-red-700"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+              
+              {sortOption !== 'date_desc' && (
+                <div className="flex items-center px-2 py-1 bg-green-100 text-green-700 rounded-md">
+                  {sortOption === 'date_asc' ? '📅 오래된순' : 
+                   sortOption === 'relevance' ? '🎯 관련도순' : ''}
+                  <button
+                    onClick={() => {
+                      setSortOption('date_desc')
+                      if (query) handleSearch(query, 1)
+                    }}
+                    className="ml-2 text-red-500 hover:text-red-700"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -457,8 +470,30 @@ export default function Home() {
                   </span>
                 </div>
                 
-                {/* 페이지네이션 및 그룹핑 토글 */}
-                <div className="flex items-center space-x-4">
+                {/* 컨트롤 패널 - 정렬, 그룹핑, 페이지네이션 */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
+                  {/* 정렬 선택 */}
+                  <div className="flex items-center space-x-2">
+                    <label htmlFor="sort-select" className="text-xs font-medium text-gray-600">
+                      정렬:
+                    </label>
+                    <select
+                      id="sort-select"
+                      value={sortOption}
+                      onChange={(e) => {
+                        setSortOption(e.target.value)
+                        if (query) {
+                          handleSearch(query, 1) // 정렬 변경 시 첫 페이지로 돌아감
+                        }
+                      }}
+                      className="px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="date_desc">📅 최신순</option>
+                      <option value="date_asc">📅 오래된순</option>
+                      <option value="relevance">🎯 관련도순</option>
+                    </select>
+                  </div>
+                  
                   {/* 그룹핑 토글 */}
                   <div className="flex items-center space-x-2">
                     <button
@@ -537,15 +572,6 @@ export default function Home() {
                   ))}
                 </div>
               )}
-
-              {/* 활성 사이트 정보 */}
-              <div className="mt-8 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                <div className="text-center text-sm text-blue-700">
-                  📰 <strong>이번 페이지 활성 사이트:</strong> {searchResult.active_sources.join(', ')}
-                  <br />
-                  각 사이트에서 최대 {searchResult.per_site_limit}개씩 가져왔습니다.
-                </div>
-              </div>
             </div>
           ) : (
             <div className="text-center py-12 text-gray-500">

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import json
 import re
 import time
+from urllib.parse import quote # Added for quote function
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +32,17 @@ class AsahiScraper:
         try:
             logger.info(f"Asahi Shimbun 검색: {query}")
             
-            # Asahi 검색 URL 패턴 (영어 섹션 우선)
+            # 1단계: 실제 Asahi 검색 API 사용
+            articles = self._search_with_api(query, limit)
+            if articles:
+                logger.info(f"Asahi API에서 {len(articles)}개 기사 발견")
+                return articles
+            
+            # 2단계: 실제로 작동하는 Asahi 검색 URL 사용
             search_urls = [
-                f"https://www.asahi.com/ajw/search?q={query}",
-                f"https://www.asahi.com/search?q={query}&lang=en",
-                f"https://www.asahi.com/search?keyword={query}",
-                f"https://www.asahi.com/ajw/?s={query}"
+                f"https://www.asahi.com/ajw/?s={query}",  # 200 status 확인됨
+                f"https://www.asahi.com/ajw/search?query={query}",
+                f"https://www.asahi.com/?s={query}"
             ]
             
             for search_url in search_urls:
@@ -62,6 +68,79 @@ class AsahiScraper:
             
         except Exception as e:
             logger.error(f"Asahi 검색 실패: {e}")
+            return []
+    
+    def _search_with_api(self, query: str, limit: int) -> List[Dict]:
+        """Asahi 검색 API 사용"""
+        try:
+            api_url = f"https://sitesearch.asahi.com/sitesearch-api/?Keywords={quote(query)}&start=0&sort=2"
+            
+            response = requests.get(api_url, headers=self.headers, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if 'goo' not in data or 'docs' not in data['goo']:
+                logger.debug("Asahi API: 올바른 응답 구조가 아님")
+                return []
+            
+            articles = []
+            docs = data['goo']['docs']
+            
+            for doc in docs[:limit]:
+                try:
+                    title = doc.get('TITLE', '').strip()
+                    body = doc.get('BODY', '').strip()
+                    url = doc.get('URL', '').strip()
+                    photo_url = doc.get('PHOTOURL', '').strip()  # 이미지 URL 추출
+                    
+                    if not title or not url or len(title) < 10:
+                        continue
+                    
+                    # URL 정규화
+                    if not url.startswith('http'):
+                        if url.startswith('/'):
+                            url = self.base_url + url
+                        else:
+                            url = self.base_url + '/' + url
+                    
+                    # 이미지 URL 정규화
+                    image_url = ''
+                    if photo_url:
+                        if photo_url.startswith('//'):
+                            image_url = 'https:' + photo_url
+                        elif photo_url.startswith('/'):
+                            image_url = self.base_url + photo_url
+                        elif photo_url.startswith('http'):
+                            image_url = photo_url
+                        else:
+                            image_url = self.base_url + '/' + photo_url
+                    
+                    # 날짜 추출 시도 (기본값 사용)
+                    published_date = datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+                    
+                    article = {
+                        'title': title,
+                        'url': url,
+                        'summary': body[:300] if body else title[:200],
+                        'published_date': published_date,
+                        'source': 'Asahi Shimbun',
+                        'category': self._extract_category_from_url(url),
+                        'scraped_at': datetime.now().isoformat(),
+                        'relevance_score': 1,
+                        'image_url': image_url  # 실제 이미지 URL 사용
+                    }
+                    
+                    articles.append(article)
+                    
+                except Exception as e:
+                    logger.debug(f"Asahi API 문서 파싱 실패: {e}")
+                    continue
+            
+            logger.info(f"Asahi API에서 {len(articles)}개 기사 추출")
+            return articles
+            
+        except Exception as e:
+            logger.debug(f"Asahi API 검색 실패: {e}")
             return []
     
     def _extract_search_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:

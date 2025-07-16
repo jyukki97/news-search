@@ -20,21 +20,70 @@ class DailyMailScraper:
         }
         
     def search_news(self, query: str, limit: int = 10) -> List[Dict]:
-        """Daily Mail에서 뉴스 검색 (최신 뉴스로 대체)"""
+        """Daily Mail에서 뉴스 검색 (개선된 검색 기능)"""
         try:
-            logger.info(f"Daily Mail 검색: {query} (최신 뉴스 방식)")
+            from urllib.parse import quote
+            import time
             
-            # 간단하게 최신 뉴스를 가져오는 방식 사용
-            response = requests.get(self.base_url, headers=self.headers, timeout=8)
-            response.raise_for_status()
+            logger.info(f"Daily Mail 검색: {query}")
             
-            articles = self._extract_articles_from_homepage(response.text, limit)
-            if articles:
-                logger.info(f"Daily Mail에서 {len(articles)}개 최신 뉴스 찾음")
-                return articles
-            else:
-                logger.warning("Daily Mail 홈페이지에서 기사를 찾을 수 없음")
-                return []
+            # 더 나은 헤더 설정
+            improved_headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
+            
+            # 여러 검색 URL 시도
+            search_urls = [
+                f"https://www.dailymail.co.uk/home/search.html?sel=site&searchPhrase={quote(query)}",
+                f"https://www.dailymail.co.uk/search?q={quote(query)}",
+                f"https://www.dailymail.co.uk/news/index.html",  # 뉴스 섹션
+                self.base_url  # 홈페이지 폴백
+            ]
+            
+            for i, search_url in enumerate(search_urls):
+                try:
+                    logger.info(f"Daily Mail 시도 {i+1}: {search_url}")
+                    
+                    # 점진적으로 타임아웃 늘리기
+                    timeout = 10 + (i * 5)
+                    
+                    response = requests.get(
+                        search_url, 
+                        headers=improved_headers, 
+                        timeout=timeout,
+                        allow_redirects=True
+                    )
+                    response.raise_for_status()
+                    
+                    if i < 2:  # 실제 검색 URL들
+                        articles = self._extract_search_results(response.text, limit, query)
+                    else:  # 홈페이지나 뉴스 섹션
+                        articles = self._extract_articles_from_homepage(response.text, limit)
+                    
+                    if articles:
+                        logger.info(f"Daily Mail 검색 결과: {len(articles)}개 기사 찾음")
+                        return articles
+                        
+                    # 짧은 대기 시간
+                    time.sleep(1)
+                    
+                except requests.exceptions.Timeout:
+                    logger.warning(f"Daily Mail 타임아웃: {search_url}")
+                    continue
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"Daily Mail 요청 실패: {search_url} - {e}")
+                    continue
+                except Exception as e:
+                    logger.debug(f"Daily Mail 파싱 실패: {search_url} - {e}")
+                    continue
+            
+            logger.warning("Daily Mail에서 기사를 찾을 수 없음")
+            return []
             
         except Exception as e:
             logger.error(f"Daily Mail 접근 실패: {e}")
@@ -132,12 +181,15 @@ class DailyMailScraper:
                         elif not image_url.startswith('http'):
                             image_url = self.base_url + '/' + image_url
                     
+                    # Daily Mail 날짜 추출 개선
+                    published_date = self._extract_dailymail_date(link, href)
+                    
                     # 기본 기사 정보 생성
                     article = {
                         'title': title,
                         'url': href,
                         'summary': '',
-                        'published_date': '',
+                        'published_date': published_date,
                         'source': 'Daily Mail',
                         'category': self._extract_category_from_url(href),
                         'scraped_at': datetime.now().isoformat(),
@@ -159,6 +211,203 @@ class DailyMailScraper:
         
         return articles[:limit]
     
+    def _extract_dailymail_date(self, link_elem, article_url: str) -> str:
+        """Daily Mail 기사에서 날짜 추출 (향상된 버전)"""
+        try:
+            # 1. 링크 주변 요소에서 날짜 찾기
+            parent = link_elem.find_parent()
+            if parent:
+                # time 요소 찾기
+                time_elem = parent.find('time')
+                if time_elem:
+                    datetime_attr = time_elem.get('datetime')
+                    if datetime_attr:
+                        try:
+                            if 'T' in datetime_attr:
+                                date_obj = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00'))
+                            else:
+                                date_obj = datetime.fromisoformat(datetime_attr)
+                            return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                        except:
+                            pass
+                    
+                    time_text = time_elem.get_text(strip=True)
+                    if time_text:
+                        parsed_date = self._parse_dailymail_date_text(time_text)
+                        if parsed_date:
+                            return parsed_date
+                
+                # Daily Mail 특정 클래스들
+                date_selectors = [
+                    '.date', '.time', '.published', '.timestamp', '.article-timestamp',
+                    '[class*="date"]', '[class*="time"]', '[class*="publish"]'
+                ]
+                
+                for selector in date_selectors:
+                    date_elem = parent.select_one(selector)
+                    if date_elem:
+                        date_text = date_elem.get_text(strip=True)
+                        if date_text:
+                            parsed_date = self._parse_dailymail_date_text(date_text)
+                            if parsed_date:
+                                return parsed_date
+            
+            # 2. URL에서 날짜 추출 (Daily Mail 특화)
+            date_from_url = self._extract_dailymail_date_from_url(article_url)
+            if date_from_url:
+                return date_from_url
+            
+            # 3. 실제 기사 페이지에서 날짜 추출
+            return self._extract_dailymail_date_from_page(article_url)
+            
+        except Exception as e:
+            logger.debug("Daily Mail 날짜 추출 실패: {}".format(e))
+        
+        return ''
+    
+    def _parse_dailymail_date_text(self, text: str) -> str:
+        """Daily Mail 날짜 텍스트 파싱"""
+        try:
+            # Daily Mail 스타일: "Published: 10:30 EST, 15 July 2024"
+            if 'Published:' in text:
+                # Published 이후 부분 추출
+                pub_match = re.search(r'Published:\s*(.+)', text, re.IGNORECASE)
+                if pub_match:
+                    date_part = pub_match.group(1)
+                    # 시간과 날짜 분리
+                    date_match = re.search(r'(\d{1,2}\s+\w+\s+\d{4})', date_part)
+                    if date_match:
+                        return date_match.group(1)
+            
+            # 상대적 시간 패턴
+            relative_patterns = [
+                (r'(\d+)\s*hours?\s*ago', 'hours'),
+                (r'(\d+)\s*days?\s*ago', 'days'),
+                (r'(\d+)\s*minutes?\s*ago', 'minutes'),
+                (r'(\d+)\s*weeks?\s*ago', 'weeks')
+            ]
+            
+            for pattern, unit in relative_patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    amount = int(match.group(1))
+                    from datetime import timedelta
+                    
+                    if unit == 'hours':
+                        date_obj = datetime.now() - timedelta(hours=amount)
+                    elif unit == 'days':
+                        date_obj = datetime.now() - timedelta(days=amount)
+                    elif unit == 'minutes':
+                        date_obj = datetime.now() - timedelta(minutes=amount)
+                    elif unit == 'weeks':
+                        date_obj = datetime.now() - timedelta(weeks=amount)
+                    
+                    return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+            
+            # 절대적 날짜 패턴들
+            date_patterns = [
+                r'(\d{1,2}\s+\w+\s+\d{4})',   # 15 July 2024
+                r'(\w+\s+\d{1,2},?\s+\d{4})', # July 15, 2024
+                r'(\d{1,2}/\d{1,2}/\d{4})',   # 15/07/2024
+                r'(\d{4}-\d{2}-\d{2})',       # 2024-07-15
+            ]
+            
+            for pattern in date_patterns:
+                match = re.search(pattern, text)
+                if match:
+                    return match.group(1)
+                    
+        except Exception as e:
+            logger.debug("Daily Mail 날짜 텍스트 파싱 실패: {}".format(e))
+        
+        return ''
+    
+    def _extract_dailymail_date_from_url(self, url: str) -> str:
+        """Daily Mail URL에서 날짜 추출"""
+        try:
+            # Daily Mail URL 패턴: /article-12345678/news-title-2024-07-15.html
+            patterns = [
+                r'/article-\d+/.*?(\d{4})-(\d{1,2})-(\d{1,2})',  # Daily Mail 기사 패턴
+                r'/(\d{4})/(\d{1,2})/(\d{1,2})/',  # /2024/07/15/
+                r'-(\d{4})-(\d{1,2})-(\d{1,2})',   # -2024-07-15
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, url)
+                if match:
+                    groups = match.groups()
+                    if len(groups) >= 3:
+                        year, month, day = groups[:3]
+                        try:
+                            date_obj = datetime(int(year), int(month), int(day))
+                            return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                        except:
+                            continue
+                            
+        except Exception as e:
+            logger.debug("Daily Mail URL에서 날짜 추출 실패: {}".format(e))
+        
+        return ''
+    
+    def _extract_dailymail_date_from_page(self, article_url: str) -> str:
+        """Daily Mail 기사 페이지에서 날짜 추출"""
+        try:
+            response = requests.get(article_url, headers=self.headers, timeout=5)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # 메타 태그에서 날짜 찾기
+                meta_selectors = [
+                    'meta[property="article:published_time"]',
+                    'meta[name="publication_date"]',
+                    'meta[name="publishdate"]',
+                    'meta[property="article:modified_time"]'
+                ]
+                
+                for selector in meta_selectors:
+                    meta_elem = soup.select_one(selector)
+                    if meta_elem:
+                        content = meta_elem.get('content', '')
+                        if content:
+                            try:
+                                date_obj = datetime.fromisoformat(content.replace('Z', '+00:00'))
+                                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                            except:
+                                pass
+                
+                # Daily Mail 기사 페이지 특정 요소들
+                content_selectors = [
+                    'time[datetime]',
+                    '.article-timestamp',
+                    '.published',
+                    '[class*="date"]',
+                    '[class*="time"]',
+                    '.byline-section time'
+                ]
+                
+                for selector in content_selectors:
+                    elem = soup.select_one(selector)
+                    if elem:
+                        datetime_attr = elem.get('datetime', '')
+                        if datetime_attr:
+                            try:
+                                date_obj = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00'))
+                                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                            except:
+                                pass
+                        
+                        text = elem.get_text(strip=True)
+                        if text:
+                            parsed_date = self._parse_dailymail_date_text(text)
+                            if parsed_date:
+                                return parsed_date
+                                
+        except Exception as e:
+            logger.debug("Daily Mail 기사 페이지에서 날짜 추출 실패: {}".format(e))
+        
+        # 현재 시간을 기본값으로 (최신 뉴스라고 가정)
+        return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+
     def _is_valid_image_url(self, url: str) -> bool:
         """이미지 URL이 유효한지 확인"""
         if not url:

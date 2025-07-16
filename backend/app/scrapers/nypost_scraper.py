@@ -132,12 +132,15 @@ class NYPostScraper:
                         elif not image_url.startswith('http'):
                             image_url = self.base_url + '/' + image_url
                     
+                    # 날짜 추출
+                    published_date = self._extract_date(href, title)
+                    
                     # 기본 기사 정보 생성
                     article = {
                         'title': title,
                         'url': href,
                         'summary': '',
-                        'published_date': '',
+                        'published_date': published_date,
                         'source': 'NY Post',
                         'category': self._extract_category_from_url(href),
                         'scraped_at': datetime.now().isoformat(),

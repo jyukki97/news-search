@@ -9,12 +9,13 @@ import re
 from ..scrapers.bbc_scraper import BBCNewsScraper
 from ..scrapers.nypost_scraper import NYPostScraper
 from ..scrapers.thesun_scraper import TheSunScraper
-from ..scrapers.dailymail_scraper import DailyMailScraper
-from ..scrapers.scmp_scraper import SCMPScraper
 from ..scrapers.vnexpress_scraper import VNExpressScraper
 from ..scrapers.bangkokpost_scraper import BangkokPostScraper
 from ..scrapers.asahi_scraper import AsahiScraper
 from ..scrapers.yomiuri_scraper import YomiuriScraper
+from ..scrapers.hybrid_dailymail_scraper import HybridDailyMailScraper
+from ..scrapers.hybrid_scmp_scraper import HybridSCMPScraper
+from ..scrapers.hybrid_nypost_scraper import HybridNYPostScraper
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +23,15 @@ router = APIRouter(prefix="/api/news", tags=["news"])
 
 # 스크래퍼 인스턴스 생성
 bbc_scraper = BBCNewsScraper()
-nypost_scraper = NYPostScraper()
 thesun_scraper = TheSunScraper()
 vnexpress_scraper = VNExpressScraper()
 bangkokpost_scraper = BangkokPostScraper()
 asahi_scraper = AsahiScraper()
 yomiuri_scraper = YomiuriScraper()
-dailymail_scraper = DailyMailScraper()
-scmp_scraper = SCMPScraper()
+# 하이브리드 스크래퍼들 (느림)
+nypost_scraper = HybridNYPostScraper()
+dailymail_scraper = HybridDailyMailScraper()
+scmp_scraper = HybridSCMPScraper()
 
 def run_scraper_search(scraper, query, limit):
     """스크래퍼 검색을 실행하는 헬퍼 함수"""
@@ -66,18 +68,34 @@ def filter_articles_by_date(articles: List[Dict], date_from: Optional[str], date
             
             if date_from:
                 try:
-                    from_date = datetime.strptime(date_from, '%Y-%m-%d')
+                    # datetime-local 형식과 date 형식 모두 지원
+                    if 'T' in date_from:
+                        # datetime-local 형식: 2024-07-15T10:30
+                        from_date = datetime.strptime(date_from, '%Y-%m-%dT%H:%M')
+                    else:
+                        # date 형식: 2024-07-15 (하루 시작으로 설정)
+                        from_date = datetime.strptime(date_from, '%Y-%m-%d')
+                    
                     if article_date < from_date:
                         date_in_range = False
-                except:
+                except Exception as e:
+                    logger.debug(f"date_from 파싱 실패 ({date_from}): {e}")
                     pass  # date_from 파싱 실패시 무시
             
             if date_to and date_in_range:
                 try:
-                    to_date = datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)  # 하루 끝까지 포함
+                    # datetime-local 형식과 date 형식 모두 지원
+                    if 'T' in date_to:
+                        # datetime-local 형식: 2024-07-15T22:30
+                        to_date = datetime.strptime(date_to, '%Y-%m-%dT%H:%M')
+                    else:
+                        # date 형식: 2024-07-15 (하루 끝까지 포함)
+                        to_date = datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)
+                    
                     if article_date >= to_date:
                         date_in_range = False
-                except:
+                except Exception as e:
+                    logger.debug(f"date_to 파싱 실패 ({date_to}): {e}")
                     pass  # date_to 파싱 실패시 무시
             
             if date_in_range:

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import json
 import re
 import time
+from urllib.parse import quote # Added missing import
 
 logger = logging.getLogger(__name__)
 
@@ -31,38 +32,28 @@ class YomiuriScraper:
         try:
             logger.info(f"Yomiuri Shimbun 검색: {query}")
             
-            # Yomiuri 검색 URL 패턴 (영어 섹션 우선)
-            search_urls = [
-                f"https://www.yomiuri.co.jp/english/search?q={query}",
-                f"https://www.yomiuri.co.jp/search?q={query}&lang=en",
-                f"https://www.yomiuri.co.jp/search?keyword={query}",
-                f"https://www.yomiuri.co.jp/english/?s={query}"
-            ]
+            # 실제 Yomiuri 검색 API URL 사용
+            search_url = f"https://www.yomiuri.co.jp/web-search/?st=1&wo={quote(query)}&ac=srch&ar=1&fy=&fm=&fd=&ty=&tm=&td="
             
-            for search_url in search_urls:
-                try:
-                    logger.info(f"Yomiuri 검색 시도: {search_url}")
-                    response = requests.get(search_url, headers=self.headers, timeout=15)
-                    response.raise_for_status()
-                    
-                    articles = self._extract_search_results(response.text, limit, query)
-                    if articles:
-                        logger.info(f"Yomiuri에서 {len(articles)}개 기사 발견")
-                        return articles
-                    else:
-                        logger.debug(f"검색 결과 없음: {search_url}")
-                        
-                except Exception as e:
-                    logger.debug(f"Yomiuri 검색 URL 실패 {search_url}: {e}")
-                    continue
+            logger.info(f"Yomiuri 검색 시도: {search_url}")
+            response = requests.get(search_url, headers=self.headers, timeout=15)
+            response.raise_for_status()
             
-            # 검색 실패 시 영어 섹션 최신 뉴스로 대체
-            logger.info("Yomiuri 검색 실패, 최신 뉴스로 대체")
-            return self.get_latest_news('news', limit)
+            articles = self._extract_search_results(response.text, limit, query)
+            if articles:
+                logger.info(f"Yomiuri에서 {len(articles)}개 기사 발견")
+                return articles
+            else:
+                logger.debug("Yomiuri 검색 결과 없음")
+                
+                # 검색 실패 시 영어 섹션 최신 뉴스로 대체
+                logger.info("Yomiuri 검색 실패, 최신 뉴스로 대체")
+                return self.get_latest_news('news', limit)
             
         except Exception as e:
             logger.error(f"Yomiuri 검색 실패: {e}")
-            return []
+            # 오류 시에도 최신 뉴스로 폴백
+            return self.get_latest_news('news', limit)
     
     def _extract_search_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:
         """HTML에서 검색 결과 추출"""
