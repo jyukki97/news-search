@@ -19,7 +19,9 @@ export interface SearchResponse {
   total_articles: number
   active_sources: string[]
   has_next_page: boolean
+  group_by_source: boolean
   articles: NewsArticle[]
+  articles_by_source: { [key: string]: NewsArticle[] }
 }
 
 export interface LatestNewsResponse {
@@ -67,10 +69,11 @@ export async function searchNews(
   sources: string = 'all',
   sort: string = 'date_desc',
   dateFrom?: string,
-  dateTo?: string
+  dateTo?: string,
+  groupBySource: boolean = false
 ): Promise<SearchResponse> {
   const encodedQuery = encodeURIComponent(query)
-  let url = `/api/news/search?query=${encodedQuery}&page=${page}&per_site_limit=${perSiteLimit}&sources=${sources}&sort=${sort}`
+  let url = `/api/news/search?query=${encodedQuery}&page=${page}&per_site_limit=${perSiteLimit}&sources=${sources}&sort=${sort}&group_by_source=${groupBySource}`
   
   if (dateFrom) {
     url += `&date_from=${dateFrom}`

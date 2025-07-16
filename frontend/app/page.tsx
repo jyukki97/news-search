@@ -137,7 +137,8 @@ export default function Home() {
         sourcesParam, // 선택된 사이트들만
         sortOption, // 선택된 정렬 방식
         dateFrom || undefined,
-        dateTo || undefined
+        dateTo || undefined,
+        groupBySource // 출처별 그룹핑 옵션 전달
       )
       setSearchResult(result)
       setCurrentPage(page)
@@ -497,7 +498,14 @@ export default function Home() {
                   {/* 그룹핑 토글 */}
                   <div className="flex items-center space-x-2">
                     <button
-                      onClick={() => setGroupBySource(!groupBySource)}
+                      onClick={() => {
+                        const newGroupBySource = !groupBySource
+                        setGroupBySource(newGroupBySource)
+                        if (query) {
+                          // 그룹핑 옵션 변경 후 즉시 다시 검색
+                          handleSearch(query, 1)
+                        }
+                      }}
                       className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
                         groupBySource
                           ? 'bg-blue-500 text-white'
@@ -541,9 +549,9 @@ export default function Home() {
 
               {/* 기사 표시 */}
               {groupBySource ? (
-                // 출처별 그룹핑 표시
+                // 출처별 그룹핑 표시 (백엔드에서 받은 데이터 사용)
                 <div className="space-y-8">
-                  {Object.entries(groupArticlesBySource(searchResult.articles)).map(([source, articles]) => (
+                  {Object.entries(searchResult.articles_by_source || {}).map(([source, articles]) => (
                     <div key={source} className="space-y-4">
                       {/* 출처 헤더 */}
                       <div className="border-b border-gray-200 pb-2">

@@ -164,11 +164,12 @@ async def search_news(
     sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)"),
     sort: str = Query("date_desc", description="정렬 방식 (date_desc: 최신순, date_asc: 과거순, relevance: 관련도순)"),
     date_from: Optional[str] = Query(None, description="시작 날짜 (YYYY-MM-DD 형식)"),
-    date_to: Optional[str] = Query(None, description="종료 날짜 (YYYY-MM-DD 형식)")
+    date_to: Optional[str] = Query(None, description="종료 날짜 (YYYY-MM-DD 형식)"),
+    group_by_source: bool = Query(False, description="출처별로 그룹핑하여 반환할지 여부")
 ) -> Dict:
-    """뉴스 통합 검색 (사이트별 페이지네이션)"""
+    """뉴스 통합 검색 (사이트별 페이지네이션 및 출처별 그룹핑 지원)"""
     try:
-        logger.info(f"뉴스 통합 검색 요청: {query}, 페이지: {page}, 사이트당: {per_site_limit}개, 사이트: {sources}")
+        logger.info(f"뉴스 통합 검색 요청: {query}, 페이지: {page}, 사이트당: {per_site_limit}개, 사이트: {sources}, 그룹핑: {group_by_source}")
         
         # 검색할 사이트 파싱
         requested_sources = [s.strip().lower() for s in sources.split(",")] if sources != "all" else ["all"]
@@ -203,6 +204,7 @@ async def search_news(
             
             # 결과 수집
             all_articles = []
+            articles_by_source = {}  # 출처별 그룹핑용
             active_sources = []
             
             for future in concurrent.futures.as_completed(futures):
@@ -217,6 +219,7 @@ async def search_news(
                         
                         if page_articles:
                             all_articles.extend(page_articles)
+                            articles_by_source[source_name] = page_articles  # 출처별 저장
                             active_sources.append(source_name)
                             logger.info(f"{source_name}에서 페이지 {page}: {len(page_articles)}개 기사 수집")
                 except Exception as e:
@@ -234,15 +237,37 @@ async def search_news(
                 # 관련도 순으로 정렬
                 all_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
         
+        # 출처별 그룹핑된 기사들도 정렬
+        if articles_by_source:
+            for source_name in articles_by_source:
+                source_articles = articles_by_source[source_name]
+                if sort == "date_desc":
+                    source_articles.sort(key=lambda x: x.get('published_date', ''), reverse=True)
+                elif sort == "date_asc":
+                    source_articles.sort(key=lambda x: x.get('published_date', ''), reverse=False)
+                elif sort == "relevance":
+                    source_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+                articles_by_source[source_name] = source_articles
+        
         # 날짜 범위 필터링 적용
         if date_from or date_to:
             all_articles = filter_articles_by_date(all_articles, date_from, date_to)
             logger.info(f"날짜 범위 필터링 적용: 시작={date_from}, 종료={date_to}, 필터링 후 기사 수: {len(all_articles)}")
+            
+            # 출처별 그룹핑된 기사들도 날짜 필터링 적용
+            if articles_by_source:
+                for source_name in list(articles_by_source.keys()):
+                    filtered_source_articles = filter_articles_by_date(articles_by_source[source_name], date_from, date_to)
+                    if filtered_source_articles:
+                        articles_by_source[source_name] = filtered_source_articles
+                    else:
+                        del articles_by_source[source_name]  # 필터링 후 기사가 없으면 제거
         
         # 다음 페이지 여부 확인 (간단히 현재 페이지에서 기사가 있다면 다음 페이지도 있을 가능성이 있다고 가정)
         has_next_page = len(all_articles) > 0
         
-        return {
+        # 응답 구성
+        response = {
             "success": True,
             "query": query,
             "page": page,
@@ -250,8 +275,19 @@ async def search_news(
             "total_articles": len(all_articles),
             "active_sources": active_sources,
             "has_next_page": has_next_page,
-            "articles": all_articles
+            "group_by_source": group_by_source
         }
+        
+        if group_by_source:
+            # 출처별 그룹핑된 결과 반환
+            response["articles_by_source"] = articles_by_source
+            response["articles"] = []  # 그룹핑할 때는 전체 리스트는 비움
+        else:
+            # 일반적인 통합 결과 반환
+            response["articles"] = all_articles
+            response["articles_by_source"] = {}  # 그룹핑하지 않을 때는 비움
+        
+        return response
         
     except Exception as e:
         logger.error(f"뉴스 검색 실패: {e}")

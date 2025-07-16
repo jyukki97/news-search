@@ -13,12 +13,24 @@ import logging
 from urllib.parse import quote
 import re
 import time
+import json
 
 logger = logging.getLogger(__name__)
 
 class HybridSCMPScraper:
     def __init__(self):
         self.base_url = "https://www.scmp.com"
+        # SCMP GraphQL API 정보 (todoList3.md에서 확인된 실제 API)
+        self.api_url = "https://apigw.scmp.com/content-delivery/v2"
+        self.api_headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+            'apikey': 'MyYvyg8M9RTaevVlcIRhN5yRIqqVssNY',
+            'content-type': 'application/json',
+            'origin': 'https://www.scmp.com',
+            'referer': 'https://www.scmp.com/',
+            'accept': '*/*',
+            'accept-language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+        }
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
@@ -35,28 +47,277 @@ class HybridSCMPScraper:
             return False
     
     def search_news(self, query: str, limit: int = 10) -> List[Dict]:
-        """하이브리드 뉴스 검색: HTTP → Selenium"""
+        """하이브리드 뉴스 검색: GraphQL API → Selenium"""
         logger.info(f"SCMP 하이브리드 검색: {query}")
         
-        # 1단계: HTTP 시도 (기존 로직 사용)
-        articles = self._search_with_http(query, limit)
+        # 1단계: GraphQL API 시도 (실제 SCMP API 사용)
+        articles = self._search_with_graphql(query, limit)
         
         if articles and len(articles) >= 3:
-            logger.info(f"HTTP로 {len(articles)}개 기사 찾음")
+            logger.info(f"GraphQL API로 {len(articles)}개 기사 찾음")
             return articles
         
-        # 2단계: Selenium 시도
+        # 2단계: HTTP 폴백 시도
+        http_articles = self._search_with_http(query, limit)
+        if http_articles and len(http_articles) >= 3:
+            logger.info(f"HTTP로 {len(http_articles)}개 기사 찾음")
+            return http_articles
+        
+        # 3단계: Selenium 시도
         if self.selenium_available:
-            logger.info("HTTP 결과 부족, Selenium으로 시도")
+            logger.info("GraphQL/HTTP 결과 부족, Selenium으로 시도")
             selenium_articles = self._search_with_selenium(query, limit)
             
             if selenium_articles:
                 logger.info(f"Selenium으로 {len(selenium_articles)}개 기사 찾음")
                 return selenium_articles
         
-        # 3단계: 폴백 - 홈페이지 최신 뉴스
-        logger.info("검색 실패, 홈페이지 최신 뉴스로 폴백")
+        # 4단계: 폴백 - 홈페이지 최신 뉴스
+        logger.info("모든 검색 실패, 홈페이지 최신 뉴스로 폴백")
         return self._get_homepage_articles(limit)
+    
+    def _search_with_graphql(self, query: str, limit: int) -> List[Dict]:
+        """SCMP GraphQL API를 사용한 검색 (실제 API)"""
+        try:
+            logger.info(f"SCMP GraphQL API 검색 시도: {query}")
+            
+            # GraphQL 쿼리 구성 (todoList3.md에서 확인된 실제 구조)
+            graphql_params = {
+                "extensions": {
+                    "persistedQuery": {
+                        "sha256Hash": "05a3902acc7f34a4abcf1db1cb2b124fcc285f1e725554db4b2ce5959e5c8782",
+                        "version": 1
+                    }
+                },
+                "operationName": "searchResultPanelQuery",
+                "variables": {
+                    "articleTypeIds": [],
+                    "contentTypes": ["ARTICLE", "VIDEO", "GALLERY"],
+                    "first": min(limit * 2, 20),  # 더 많이 가져와서 필터링
+                    "paywallTypeIds": [],
+                    "query": query,
+                    "sectionIds": []
+                }
+            }
+            
+            # GET 요청으로 전송 (실제 SCMP API 방식)
+            import urllib.parse
+            query_params = {
+                'extensions': json.dumps(graphql_params['extensions']),
+                'operationName': graphql_params['operationName'],
+                'variables': json.dumps(graphql_params['variables'])
+            }
+            
+            # URL 인코딩
+            encoded_params = urllib.parse.urlencode(query_params)
+            full_url = f"{self.api_url}?{encoded_params}"
+            
+            logger.info(f"GraphQL 요청 URL: {full_url[:100]}...")
+            
+            response = requests.get(full_url, headers=self.api_headers, timeout=10)
+            response.raise_for_status()
+            
+            # 응답 파싱
+            data = response.json()
+            logger.info(f"GraphQL 응답 받음: {len(str(data))} bytes")
+            
+            # 검색 결과 추출
+            articles = self._extract_graphql_results(data, query, limit)
+            
+            if articles:
+                logger.info(f"GraphQL API로 {len(articles)}개 기사 추출 성공")
+                return articles
+            else:
+                logger.info("GraphQL API 응답에서 기사 추출 실패")
+                return []
+            
+        except Exception as e:
+            logger.error(f"SCMP GraphQL API 검색 실패: {e}")
+            return []
+    
+    def _extract_graphql_results(self, data: dict, query: str, limit: int) -> List[Dict]:
+        """GraphQL 응답에서 기사 정보 추출"""
+        articles = []
+        
+        try:
+            # GraphQL 응답 구조 파싱
+            if 'data' in data:
+                search_data = data['data']
+                
+                # SCMP GraphQL API의 실제 응답 구조 사용
+                edges = None
+                
+                # 실제 SCMP API 응답 구조: data.articleSearch.edges
+                if 'articleSearch' in search_data and 'edges' in search_data['articleSearch']:
+                    edges = search_data['articleSearch']['edges']
+                    logger.info(f"GraphQL articleSearch에서 {len(edges)}개 기사 발견")
+                else:
+                    # 대안 경로들 시도
+                    possible_paths = [
+                        ['searchPanel', 'articles', 'edges'],
+                        ['searchPanel', 'content', 'edges'],
+                        ['search', 'articles', 'edges'],
+                        ['search', 'results', 'edges'],
+                        ['articles', 'edges'],
+                        ['results', 'edges'],
+                        ['edges']
+                    ]
+                    
+                    for path in possible_paths:
+                        current = search_data
+                        try:
+                            for key in path:
+                                if key in current:
+                                    current = current[key]
+                                else:
+                                    break
+                            else:
+                                # 모든 키가 존재하는 경우
+                                if isinstance(current, list):
+                                    edges = current
+                                    logger.info(f"GraphQL 대안 경로 {path}에서 {len(edges)}개 기사 발견")
+                                    break
+                        except:
+                            continue
+                
+                if edges:
+                    for edge in edges[:limit]:
+                        try:
+                            node = edge.get('node', {})
+                            if not node:
+                                continue
+                            
+                            # SCMP GraphQL 응답의 실제 구조 사용
+                            content = node.get('content', {})
+                            if not content:
+                                continue
+                            
+                            # 기사 정보 추출
+                            title = content.get('headline', '') or content.get('title', '')
+                            
+                            # URL 구성 - urlAlias 사용
+                            url_alias = content.get('urlAlias', '')
+                            if url_alias:
+                                url = self.base_url + url_alias
+                            else:
+                                url = content.get('url', '') or content.get('link', '')
+                                if url and not url.startswith('http'):
+                                    if url.startswith('/'):
+                                        url = self.base_url + url
+                                    else:
+                                        url = self.base_url + '/' + url
+                            
+                            # 요약 추출
+                            summary = ''
+                            if 'summary' in content and content['summary']:
+                                summary = content['summary'].get('text', '')
+                            
+                            if not title or not url:
+                                continue
+                            
+                            # 이미지 URL 추출 - SCMP 구조에 맞게
+                            image_url = ''
+                            if 'images' in content and content['images'] and len(content['images']) > 0:
+                                first_image = content['images'][0]
+                                image_url = first_image.get('url', '')
+                                if not image_url and 'size540x360' in first_image:
+                                    image_url = first_image['size540x360'].get('url', '')
+                            
+                            if image_url and not image_url.startswith('http'):
+                                if image_url.startswith('//'):
+                                    image_url = 'https:' + image_url
+                                elif image_url.startswith('/'):
+                                    image_url = self.base_url + image_url
+                            
+                            # 날짜 추출 - SCMP 구조에 맞게
+                            published_date = ''
+                            published_timestamp = content.get('publishedDate')
+                            if published_timestamp:
+                                try:
+                                    # 밀리초 타임스탬프를 초로 변환
+                                    if isinstance(published_timestamp, (int, float)):
+                                        timestamp = published_timestamp / 1000 if published_timestamp > 1e10 else published_timestamp
+                                        published_date = datetime.fromtimestamp(timestamp).strftime('%a, %d %b %Y %H:%M:%S GMT')
+                                except:
+                                    pass
+                            
+                            if not published_date:
+                                published_date = datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+                            
+                            # 카테고리 추출 - SCMP 구조에 맞게
+                            category = 'General'
+                            if 'sections' in content and content['sections']:
+                                for section_group in content['sections']:
+                                    if 'value' in section_group and section_group['value']:
+                                        section_name = section_group['value'][0].get('name', '').lower()
+                                        if 'sport' in section_name:
+                                            category = 'sports'
+                                        elif 'business' in section_name or 'economy' in section_name:
+                                            category = 'business'
+                                        elif 'tech' in section_name or 'technology' in section_name:
+                                            category = 'technology'
+                                        elif 'news' in section_name:
+                                            category = 'news'
+                                        else:
+                                            category = section_name.title()
+                                        break
+                            
+                            # 관련성 점수 계산
+                            relevance_score = self._calculate_relevance(title, summary, query)
+                            
+                            article = {
+                                'title': title[:200],
+                                'url': url,
+                                'summary': summary[:300] if summary else '',
+                                'published_date': published_date,
+                                'source': 'SCMP',
+                                'category': category,
+                                'scraped_at': datetime.now().isoformat(),
+                                'relevance_score': relevance_score,
+                                'image_url': image_url
+                            }
+                            
+                            articles.append(article)
+                            
+                        except Exception as e:
+                            logger.debug(f"GraphQL 기사 추출 실패: {e}")
+                            continue
+                
+                else:
+                    logger.info("GraphQL 응답에서 기사 목록을 찾을 수 없음")
+                    if search_data:
+                        logger.debug(f"응답 구조: {list(search_data.keys())}")
+            
+        except Exception as e:
+            logger.error(f"GraphQL 결과 파싱 실패: {e}")
+        
+        # 관련성 순으로 정렬
+        articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+        
+        return articles[:limit]
+    
+    def _calculate_relevance(self, title: str, summary: str, query: str) -> float:
+        """검색어와 기사의 관련성 점수 계산"""
+        if not query:
+            return 1.0
+        
+        query_words = query.lower().split()
+        title_lower = title.lower()
+        summary_lower = summary.lower()
+        
+        score = 0.0
+        
+        for word in query_words:
+            # 제목에서 발견 (높은 점수)
+            if word in title_lower:
+                score += 3.0
+            # 요약에서 발견 (중간 점수)
+            elif word in summary_lower:
+                score += 1.0
+        
+        # 정규화 (0-1 범위)
+        max_possible_score = len(query_words) * 3.0
+        return min(score / max_possible_score, 1.0) if max_possible_score > 0 else 0.0
     
     def _search_with_http(self, query: str, limit: int) -> List[Dict]:
         """HTTP 기반 검색 (실제 SCMP 검색 URL 사용)"""
