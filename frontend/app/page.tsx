@@ -245,30 +245,139 @@ export default function Home() {
   }
 
   const handleSearch = async (searchQuery: string, page: number = 1) => {
+    if (useSearchStreamMode) {
+      await handleSearchStream(searchQuery, page)
+    } else {
+      setLoading(true)
+      if (page === 1) {
+        setQuery(searchQuery)
+        setCurrentPage(1)
+      }
+      
+      try {
+        const sourcesParam = getSelectedSourcesString()
+        const result = await searchNews(
+          searchQuery, 
+          page, 
+          10, // 각 사이트에서 10개씩
+          sourcesParam, // 선택된 사이트들만
+          sortOption, // 선택된 정렬 방식
+          dateFrom || undefined,
+          dateTo || undefined,
+          groupBySource // 출처별 그룹핑 옵션 전달
+        )
+        setSearchResult(result)
+        setCurrentPage(page)
+      } catch (error) {
+        console.error('검색 실패:', error)
+        setSearchResult(null)
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  const handleSearchStream = async (searchQuery: string, page: number = 1) => {
     setLoading(true)
     if (page === 1) {
       setQuery(searchQuery)
       setCurrentPage(1)
     }
     
+    // 검색 스트리밍 상태 초기화
+    setSearchStreamingBySource({})
+    setSearchStreamingMessages([])
+    setSearchStreamingProgress(null)
+    setIsSearchStreamingComplete(false)
+    setSearchResult(null)
+    
+    // 이전 스트리밍이 있다면 잠시 대기
+    await new Promise(resolve => setTimeout(resolve, 100))
+    
+    const sourcesParam = getSelectedSourcesString()
+    
     try {
-      const sourcesParam = getSelectedSourcesString()
-      const result = await searchNews(
-        searchQuery, 
-        page, 
-        10, // 각 사이트에서 10개씩
-        sourcesParam, // 선택된 사이트들만
+      await searchNewsStream(
+        searchQuery,
+        page,
+        10, // 사이트당 10개씩
+        sourcesParam,
         sortOption, // 선택된 정렬 방식
-        dateFrom || undefined,
-        dateTo || undefined,
-        groupBySource // 출처별 그룹핑 옵션 전달
+        // onMessage 콜백
+        (message: SearchStreamingMessage) => {
+          console.log('검색 스트리밍 메시지:', message)
+          
+          switch (message.type) {
+            case 'start':
+              setSearchStreamingMessages(prev => [...prev, `🔍 뉴스 검색 시작: "${message.query}"`])
+              break
+              
+            case 'source_complete':
+              if (message.source && message.articles) {
+                setSearchStreamingBySource(prev => ({
+                  ...prev,
+                  [message.source as string]: message.articles || []
+                }))
+                setSearchStreamingMessages(prev => [...prev, `✅ ${message.source}: ${message.article_count}개 기사`])
+              }
+              if (message.progress) {
+                setSearchStreamingProgress(message.progress)
+              }
+              break
+              
+            case 'source_empty':
+              if (message.source) {
+                setSearchStreamingMessages(prev => [...prev, `⚪ ${message.source}: 검색 결과 없음`])
+              }
+              if (message.progress) {
+                setSearchStreamingProgress(message.progress)
+              }
+              break
+              
+            case 'source_timeout':
+              if (message.source) {
+                setSearchStreamingMessages(prev => [...prev, `⏰ ${message.source}: 타임아웃`])
+              }
+              if (message.progress) {
+                setSearchStreamingProgress(message.progress)
+              }
+              break
+              
+            case 'source_error':
+              if (message.source) {
+                setSearchStreamingMessages(prev => [...prev, `❌ ${message.source}: 오류 발생`])
+              }
+              if (message.progress) {
+                setSearchStreamingProgress(message.progress)
+              }
+              break
+              
+            case 'complete':
+              setSearchStreamingMessages(prev => [...prev, `🎉 검색 완료! 총 ${message.total_articles}개 기사`])
+              setIsSearchStreamingComplete(true)
+              break
+              
+            case 'error':
+              setSearchStreamingMessages(prev => [...prev, `💥 오류: ${message.message}`])
+              break
+          }
+        },
+        // onError 콜백
+        (error: Error) => {
+          console.error('검색 스트리밍 오류:', error)
+          setSearchStreamingMessages(prev => [...prev, `💥 검색 스트리밍 오류: ${error.message}`])
+          setLoading(false)
+        },
+        // onComplete 콜백
+        () => {
+          console.log('검색 스트리밍 완료')
+          setLoading(false)
+          setIsSearchStreamingComplete(true)
+        }
       )
-      setSearchResult(result)
-      setCurrentPage(page)
     } catch (error) {
-      console.error('검색 실패:', error)
-      setSearchResult(null)
-    } finally {
+      console.error('검색 스트리밍 실패:', error)
+      setSearchStreamingMessages(prev => [...prev, `💥 검색 스트리밍 실패: ${error}`])
       setLoading(false)
     }
   }
@@ -379,167 +488,439 @@ export default function Home() {
 
       {/* 검색 섹션 */}
       {viewMode === 'search' && (
-        <div className="text-center">
-          <h2 className="text-3xl font-bold text-gray-900 mb-4">
-            글로벌 뉴스 검색
-          </h2>
-          <p className="text-gray-600 mb-6">
-            9개 글로벌 뉴스 사이트에서 실시간으로 뉴스를 검색하세요
-          </p>
+        <div className="space-y-6">
+          <div className="text-center">
+            <h2 className="text-3xl font-bold text-gray-900 mb-4">
+              글로벌 뉴스 검색
+            </h2>
+            <p className="text-gray-600 mb-6">
+              9개 글로벌 뉴스 사이트에서 실시간으로 뉴스를 검색하세요
+            </p>
+          </div>
         
-        {/* 검색창과 사이트 필터 */}
-        <div className="flex flex-col lg:flex-row items-start lg:items-center gap-6 max-w-6xl mx-auto">
-          {/* 사이트 필터 */}
-          <div className="w-full lg:w-80 flex-shrink-0">
-            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="font-semibold text-gray-800 text-sm">뉴스 사이트 선택</h4>
-                <button
-                  onClick={() => setShowSiteFilter(!showSiteFilter)}
-                  className="lg:hidden text-xs text-blue-600 hover:text-blue-800"
-                >
-                  {showSiteFilter ? '숨기기' : '표시'}
-                </button>
-              </div>
+          {/* 메인 검색 레이아웃: 왼쪽 필터 + 오른쪽 검색/결과 */}
+          <div className="flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto">
+            {/* 왼쪽 사이드바: 모든 필터들 */}
+            <div className="w-full lg:w-80 flex-shrink-0 space-y-4">
               
-              <div className={`space-y-2 ${showSiteFilter || 'hidden'} lg:block`}>
-                {/* 전체 선택/해제 버튼 */}
-                <div className="flex items-center justify-between pb-2 border-b border-gray-300">
-                  <button
-                    onClick={toggleAllSites}
-                    className="text-xs text-blue-600 hover:text-blue-800 font-medium"
-                  >
-                    {selectedSitesCount === newsSites.length ? '전체 해제' : '전체 선택'}
-                  </button>
-                  <span className="text-xs text-gray-500">
-                    {selectedSitesCount}/{newsSites.length}개 선택
+              {/* 스트리밍 모드 토글 */}
+              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-4 border border-blue-200">
+                <h4 className="font-semibold text-gray-800 text-sm mb-3 flex items-center">
+                  ⚡ 검색 모드
+                </h4>
+                <label className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={useSearchStreamMode}
+                    onChange={(e) => setUseSearchStreamMode(e.target.checked)}
+                    className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+                  />
+                  <span className="text-sm text-gray-700">
+                    스트리밍 모드 (실시간 업데이트)
                   </span>
+                </label>
+                <p className="text-xs text-gray-500 mt-2">
+                  스트리밍 모드에서는 검색 결과가 실시간으로 업데이트됩니다.
+                </p>
+              </div>
+
+              {/* 뉴스 사이트 선택 */}
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-gray-800 text-sm">📰 뉴스 사이트 선택</h4>
+                  <button
+                    onClick={() => setShowSiteFilter(!showSiteFilter)}
+                    className="lg:hidden text-xs text-blue-600 hover:text-blue-800"
+                  >
+                    {showSiteFilter ? '숨기기' : '표시'}
+                  </button>
                 </div>
                 
-                {/* 사이트별 체크박스 */}
-                <div className="grid grid-cols-1 gap-1 max-h-60 overflow-y-auto">
-                  {newsSites.map((site) => (
-                    <label
-                      key={site.id}
-                      className="flex items-center space-x-2 p-2 hover:bg-gray-100 rounded cursor-pointer transition-colors"
+                <div className={`space-y-2 ${showSiteFilter || 'hidden'} lg:block`}>
+                  {/* 전체 선택/해제 버튼 */}
+                  <div className="flex items-center justify-between pb-2 border-b border-gray-300">
+                    <button
+                      onClick={toggleAllSites}
+                      className="text-xs text-blue-600 hover:text-blue-800 font-medium"
                     >
+                      {selectedSitesCount === newsSites.length ? '전체 해제' : '전체 선택'}
+                    </button>
+                    <span className="text-xs text-gray-500">
+                      {selectedSitesCount}/{newsSites.length}개 선택
+                    </span>
+                  </div>
+                  
+                  {/* 사이트별 체크박스 */}
+                  <div className="space-y-1 max-h-60 overflow-y-auto">
+                    {newsSites.map((site) => (
+                      <label
+                        key={site.id}
+                        className="flex items-center space-x-2 p-2 hover:bg-gray-100 rounded cursor-pointer transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedSites[site.id] || false}
+                          onChange={() => toggleSite(site.id)}
+                          className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+                        />
+                        <span className="text-sm text-gray-700 flex items-center flex-1">
+                          <span className="mr-1">{site.icon}</span>
+                          {site.name}
+                          {site.isSlow && (
+                            <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-600 text-xs rounded font-medium">
+                              느림
+                            </span>
+                          )}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* 정렬 및 그룹핑 옵션 */}
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <h4 className="font-semibold text-gray-800 text-sm mb-3">🔄 정렬 및 표시</h4>
+                
+                {/* 정렬 선택 */}
+                <div className="space-y-3">
+                  <div>
+                    <label htmlFor="sort-select" className="text-xs font-medium text-gray-600 block mb-1">
+                      정렬 방식:
+                    </label>
+                    <select
+                      id="sort-select"
+                      value={sortOption}
+                      onChange={(e) => {
+                        setSortOption(e.target.value)
+                        if (query) {
+                          handleSearch(query, 1) // 정렬 변경 시 첫 페이지로 돌아감
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="date_desc">📅 최신순</option>
+                      <option value="date_asc">📅 오래된순</option>
+                      <option value="relevance">🎯 관련도순</option>
+                    </select>
+                  </div>
+                  
+                  {/* 그룹핑 토글 */}
+                  <div>
+                    <label className="flex items-center space-x-2">
                       <input
                         type="checkbox"
-                        checked={selectedSites[site.id] || false}
-                        onChange={() => toggleSite(site.id)}
+                        checked={groupBySource}
+                        onChange={(e) => {
+                          const newGroupBySource = e.target.checked
+                          setGroupBySource(newGroupBySource)
+                          if (query) {
+                            // 그룹핑 옵션 변경 후 즉시 다시 검색
+                            handleSearch(query, 1)
+                          }
+                        }}
                         className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
                       />
-                      <span className="text-sm text-gray-700 flex items-center flex-1">
-                        <span className="mr-1">{site.icon}</span>
-                        {site.name}
-                        {site.isSlow && (
-                          <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-600 text-xs rounded font-medium">
-                            느림
-                          </span>
-                        )}
+                      <span className="text-sm text-gray-700">
+                        📑 출처별 그룹핑
                       </span>
                     </label>
-                  ))}
+                  </div>
                 </div>
+              </div>
+
+              {/* 날짜 범위 필터 */}
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-gray-800 text-sm">📅 날짜 범위 필터</h4>
+                  <button
+                    onClick={() => setShowDateFilter(!showDateFilter)}
+                    className="text-xs text-blue-600 hover:text-blue-800"
+                  >
+                    {showDateFilter ? '숨기기' : '표시'}
+                  </button>
+                </div>
+                
+                {showDateFilter && (
+                  <div className="space-y-3">
+                    <div>
+                      <label htmlFor="date-from" className="text-xs font-medium text-gray-600 block mb-1">
+                        시작 날짜:
+                      </label>
+                      <input
+                        id="date-from"
+                        type="datetime-local"
+                        value={dateFrom}
+                        onChange={(e) => setDateFrom(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label htmlFor="date-to" className="text-xs font-medium text-gray-600 block mb-1">
+                        종료 날짜:
+                      </label>
+                      <input
+                        id="date-to"
+                        type="datetime-local"
+                        value={dateTo}
+                        onChange={(e) => setDateTo(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => query && handleSearch(query, 1)}
+                        className="flex-1 px-3 py-2 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 transition-colors"
+                      >
+                        적용
+                      </button>
+                      <button
+                        onClick={resetDateFilter}
+                        className="flex-1 px-3 py-2 bg-gray-500 text-white rounded text-sm hover:bg-gray-600 transition-colors"
+                      >
+                        초기화
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 활성 필터 표시 */}
+              {(dateFrom || dateTo || sortOption !== 'date_desc') && (
+                <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
+                  <h4 className="font-semibold text-blue-800 text-sm mb-2">🔍 활성 필터</h4>
+                  <div className="space-y-1">
+                    {(dateFrom || dateTo) && (
+                      <div className="flex items-center justify-between px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">
+                        <span>
+                          📅 날짜: 
+                          {dateFrom && ` ${dateFrom.replace('T', ' ')}부터`}
+                          {dateTo && ` ${dateTo.replace('T', ' ')}까지`}
+                        </span>
+                        <button
+                          onClick={resetDateFilter}
+                          className="text-red-500 hover:text-red-700 ml-1"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
+                    
+                    {sortOption !== 'date_desc' && (
+                      <div className="flex items-center justify-between px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
+                        <span>
+                          {sortOption === 'date_asc' ? '📅 오래된순' : 
+                           sortOption === 'relevance' ? '🎯 관련도순' : ''}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setSortOption('date_desc')
+                            if (query) handleSearch(query, 1)
+                          }}
+                          className="text-red-500 hover:text-red-700 ml-1"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            {/* 오른쪽 메인 콘텐츠: 검색창 + 결과 */}
+            <div className="flex-1 space-y-6">
+              {/* 검색창 */}
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <SearchBar onSearch={(query) => handleSearch(query)} loading={loading} />
+              </div>
+              
+              {/* 검색 결과 또는 스트리밍 결과 표시 영역 */}
+              <div className="min-h-[400px]">
+                {/* 검색 스트리밍 결과 */}
+                {useSearchStreamMode && Object.keys(searchStreamingBySource).length > 0 ? (
+                  <div className="space-y-6">
+                    {/* 검색 스트리밍 헤더 */}
+                    <div className="bg-gray-50 p-4 rounded-lg border">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="flex items-center space-x-3 mb-2">
+                            <h3 className="text-lg font-semibold text-gray-800">
+                              🔍 검색 결과 (실시간)
+                            </h3>
+                            <button
+                              onClick={goBackToTrending}
+                              className="px-3 py-1 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
+                            >
+                              📈 트렌딩으로 돌아가기
+                            </button>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            키워드: <strong>"{query}"</strong>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 검색 스트리밍 진행률 */}
+                    {searchStreamingProgress && loading && (
+                      <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-medium text-green-800">
+                            🔍 검색 진행: {searchStreamingProgress.completed}/{searchStreamingProgress.total} 사이트
+                          </span>
+                          <span className="text-sm text-green-600">
+                            {searchStreamingProgress.percentage}%
+                          </span>
+                        </div>
+                        <div className="w-full bg-green-200 rounded-full h-2">
+                          <div 
+                            className="bg-green-600 h-2 rounded-full transition-all duration-300 ease-out"
+                            style={{ width: `${searchStreamingProgress.percentage}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 검색 스트리밍 메시지 */}
+                    {searchStreamingMessages.length > 0 && (
+                      <div className="bg-gray-50 p-4 rounded-lg border max-h-40 overflow-y-auto">
+                        <h4 className="text-sm font-medium text-gray-800 mb-2">📊 검색 로그</h4>
+                        <div className="space-y-1">
+                          {searchStreamingMessages.slice(-10).map((msg, index) => (
+                            <div key={index} className="text-xs text-gray-600">
+                              {msg}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 스트리밍 검색 결과 (사이트별로 실시간 표시) */}
+                    {Object.entries(searchStreamingBySource).map(([source, articles]) => (
+                      <div key={source} className="space-y-4 animate-fade-in">
+                        {/* 출처 헤더 */}
+                        <div className="border-b border-gray-200 pb-2">
+                          <h4 className="text-lg font-semibold text-gray-800 flex items-center">
+                            <span className="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span>
+                            🔍 {source}
+                            <span className="ml-2 px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">
+                              {articles.length}개
+                            </span>
+                          </h4>
+                        </div>
+                        
+                        {/* 출처별 기사 그리드 */}
+                        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                          {articles.map((article: NewsArticle, index: number) => (
+                            <NewsCard key={`${source}-search-streaming-${index}`} article={article} />
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : searchResult && searchResult.total_articles > 0 ? (
+                  <div className="space-y-6">
+                    {/* 검색 결과 헤더 */}
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
+                      <div className="text-sm text-gray-600">
+                        <strong>총 {searchResult.total_articles}개</strong> 기사를 찾았습니다.
+                        <br />
+                        <span className="text-xs text-gray-500">
+                          활성 사이트: {searchResult.active_sources.join(', ')}
+                        </span>
+                      </div>
+
+                      {/* 페이지네이션 */}
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={handlePrevPage}
+                          disabled={currentPage <= 1}
+                          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            currentPage <= 1
+                              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                              : 'bg-blue-500 text-white hover:bg-blue-600'
+                          }`}
+                        >
+                          ← 이전
+                        </button>
+                        <span className="px-3 py-2 bg-gray-100 rounded-lg text-sm font-medium">
+                          {currentPage}
+                        </span>
+                        <button
+                          onClick={handleNextPage}
+                          disabled={!searchResult.has_next_page}
+                          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            !searchResult.has_next_page
+                              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                              : 'bg-blue-500 text-white hover:bg-blue-600'
+                          }`}
+                        >
+                          다음 →
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 기사 표시 */}
+                    {groupBySource ? (
+                      // 출처별 그룹핑 표시 (백엔드에서 받은 데이터 사용)
+                      <div className="space-y-8">
+                        {Object.entries(searchResult.articles_by_source || {}).map(([source, articles]) => (
+                          <div key={source} className="space-y-4">
+                            {/* 출처 헤더 */}
+                            <div className="border-b border-gray-200 pb-2">
+                              <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                                📰 {source}
+                                <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full">
+                                  {articles.length}개
+                                </span>
+                              </h3>
+                            </div>
+                            
+                            {/* 출처별 기사 그리드 */}
+                            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                              {articles.map((article: NewsArticle, index: number) => (
+                                <NewsCard key={`${source}-${currentPage}-${index}`} article={article} />
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      // 기본 그리드 표시
+                      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                        {searchResult.articles.map((article: NewsArticle, index: number) => (
+                          <NewsCard key={`${currentPage}-${index}`} article={article} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : query && !loading ? (
+                  <div className="text-center py-12 text-gray-500">
+                    {selectedSitesCount === 0 ? (
+                      <div>
+                        <p>검색할 사이트를 선택해주세요.</p>
+                        <button
+                          onClick={() => setShowSiteFilter(true)}
+                          className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                        >
+                          사이트 선택하기
+                        </button>
+                      </div>
+                    ) : (
+                      '검색 결과가 없습니다. 다른 키워드로 시도해보세요.'
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-gray-400">
+                    <p>🔍 검색어를 입력하고 엔터를 눌러주세요</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
-          
-          {/* 검색창 */}
-          <div className="flex-1 w-full">
-            <SearchBar onSearch={(query) => handleSearch(query)} loading={loading} />
-          </div>
-        </div>
-        
-        {/* 날짜 필터 토글 및 입력 */}
-        <div className="mt-4 space-y-3">
-          <button
-            onClick={() => setShowDateFilter(!showDateFilter)}
-            className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
-          >
-            📅 날짜 범위 필터 {showDateFilter ? '숨기기' : '표시'}
-          </button>
-          
-          {showDateFilter && (
-            <div className="flex flex-col sm:flex-row items-center justify-center space-y-2 sm:space-y-0 sm:space-x-4 p-4 bg-gray-50 rounded-lg">
-              <div className="flex flex-col space-y-1">
-                <label htmlFor="date-from" className="text-xs font-medium text-gray-600">
-                  시작 날짜 및 시간:
-                </label>
-                <input
-                  id="date-from"
-                  type="datetime-local"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                  className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              
-              <div className="flex flex-col space-y-1">
-                <label htmlFor="date-to" className="text-xs font-medium text-gray-600">
-                  종료 날짜 및 시간:
-                </label>
-                <input
-                  id="date-to"
-                  type="datetime-local"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
-                  className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              
-              <div className="flex space-x-2">
-                <button
-                  onClick={() => query && handleSearch(query, 1)}
-                  className="px-3 py-1 bg-blue-500 text-white rounded-md text-sm hover:bg-blue-600 transition-colors"
-                >
-                  적용
-                </button>
-                <button
-                  onClick={resetDateFilter}
-                  className="px-3 py-1 bg-gray-500 text-white rounded-md text-sm hover:bg-gray-600 transition-colors"
-                >
-                  초기화
-                </button>
-              </div>
-            </div>
-          )}
-          
-          {/* 활성 필터 표시 */}
-          {(dateFrom || dateTo || sortOption !== 'date_desc') && (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              {(dateFrom || dateTo) && (
-                <div className="flex items-center px-2 py-1 bg-blue-100 text-blue-700 rounded-md">
-                  📅 날짜 필터: 
-                  {dateFrom && ` ${dateFrom.replace('T', ' ')}부터`}
-                  {dateTo && ` ${dateTo.replace('T', ' ')}까지`}
-                  <button
-                    onClick={resetDateFilter}
-                    className="ml-2 text-red-500 hover:text-red-700"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-              
-              {sortOption !== 'date_desc' && (
-                <div className="flex items-center px-2 py-1 bg-green-100 text-green-700 rounded-md">
-                  {sortOption === 'date_asc' ? '📅 오래된순' : 
-                   sortOption === 'relevance' ? '🎯 관련도순' : ''}
-                  <button
-                    onClick={() => {
-                      setSortOption('date_desc')
-                      if (query) handleSearch(query, 1)
-                    }}
-                    className="ml-2 text-red-500 hover:text-red-700"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
         </div>
       )}
 
@@ -709,258 +1090,14 @@ export default function Home() {
       )}
 
       {/* 로딩 상태 */}
-      {loading && (
+      {loading && viewMode === 'search' && !useSearchStreamMode && (
         <div className="text-center py-8">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
           <p className="mt-2 text-gray-600">검색 중...</p>
         </div>
       )}
 
-      {/* 검색 결과 */}
-      {(searchResult || (useSearchStreamMode && Object.keys(searchStreamingBySource).length > 0)) && (
-        <div className="space-y-6">
-          {/* 검색 스트리밍 모드 토글 */}
-          <div className="flex items-center justify-center mb-4">
-            <label className="flex items-center space-x-2 text-sm">
-              <input
-                type="checkbox"
-                checked={useSearchStreamMode}
-                onChange={(e) => setUseSearchStreamMode(e.target.checked)}
-                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
-              />
-              <span className="text-gray-700">
-                ⚡ 검색 스트리밍 모드 (실시간 검색)
-              </span>
-            </label>
-          </div>
 
-          {/* 검색 스트리밍 결과 */}
-          {useSearchStreamMode ? (
-            <div className="space-y-6">
-              {/* 검색 스트리밍 헤더 */}
-              <div className="bg-gray-50 p-4 rounded-lg border">
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-                  <div>
-                    <div className="flex items-center space-x-3 mb-2">
-                      <h3 className="text-lg font-semibold text-gray-800">
-                        🔍 검색 결과 (실시간)
-                      </h3>
-                      <button
-                        onClick={goBackToTrending}
-                        className="px-3 py-1 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
-                      >
-                        📈 트렌딩으로 돌아가기
-                      </button>
-                    </div>
-                    <div className="text-sm text-gray-600">
-                      키워드: <strong>"{query}"</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* 검색 스트리밍 진행률 - loading 중이거나 진행률이 있을 때 표시 */}
-              {(searchStreamingProgress || loading) && (
-                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-green-800">
-                      🔍 검색 진행상황: {searchStreamingProgress?.completed || 0}/{searchStreamingProgress?.total || 1} 사이트
-                    </span>
-                    <span className="text-sm text-green-600">
-                      {searchStreamingProgress?.percentage || 0}%
-                    </span>
-                  </div>
-                  <div className="w-full bg-green-200 rounded-full h-2">
-                    <div 
-                      className="bg-green-600 h-2 rounded-full transition-all duration-300 ease-out"
-                      style={{ width: `${searchStreamingProgress?.percentage || 0}%` }}
-                    ></div>
-                  </div>
-                </div>
-              )}
-
-              {/* 검색 스트리밍 메시지 - 메시지가 있을 때 표시 */}
-              {searchStreamingMessages.length > 0 && (
-                <div className="bg-gray-50 p-4 rounded-lg border max-h-40 overflow-y-auto">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">🔍 검색 로그</h4>
-                  <div className="space-y-1">
-                    {searchStreamingMessages.slice(-10).map((msg, index) => (
-                      <div key={index} className="text-xs text-gray-600">
-                        {msg}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* 검색 스트리밍 결과 (사이트별로 실시간 표시) */}
-              {Object.keys(searchStreamingBySource).length > 0 && (
-                <div className="space-y-8">
-                  {Object.entries(searchStreamingBySource).map(([source, articles]) => (
-                    <div key={source} className="space-y-4 animate-fade-in">
-                      {/* 출처 헤더 */}
-                      <div className="border-b border-gray-200 pb-2">
-                        <h4 className="text-lg font-semibold text-gray-800 flex items-center">
-                          <span className="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span>
-                          🔍 {source}
-                          <span className="ml-2 px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">
-                            {articles.length}개
-                          </span>
-                        </h4>
-                      </div>
-                      
-                      {/* 출처별 기사 그리드 */}
-                      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                        {articles.map((article: NewsArticle, index: number) => (
-                          <NewsCard key={`${source}-search-streaming-${index}`} article={article} />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : searchResult && searchResult.total_articles > 0 ? (
-            <div className="space-y-6">
-              {/* 검색 결과 헤더 */}
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-                <div className="text-sm text-gray-600">
-                  <strong>총 {searchResult.total_articles}개</strong> 기사를 찾았습니다.
-                  <br />
-                  <span className="text-xs text-gray-500">
-                    활성 사이트: {searchResult.active_sources.join(', ')}
-                  </span>
-                </div>
-                
-                {/* 컨트롤 패널 - 정렬, 그룹핑, 페이지네이션 */}
-                <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
-                  {/* 정렬 선택 */}
-                  <div className="flex items-center space-x-2">
-                    <label htmlFor="sort-select" className="text-xs font-medium text-gray-600">
-                      정렬:
-                    </label>
-                    <select
-                      id="sort-select"
-                      value={sortOption}
-                      onChange={(e) => {
-                        setSortOption(e.target.value)
-                        if (query) {
-                          handleSearch(query, 1) // 정렬 변경 시 첫 페이지로 돌아감
-                        }
-                      }}
-                      className="px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="date_desc">📅 최신순</option>
-                      <option value="date_asc">📅 오래된순</option>
-                      <option value="relevance">🎯 관련도순</option>
-                    </select>
-                  </div>
-                  
-                  {/* 그룹핑 토글 */}
-                  <div className="flex items-center space-x-2">
-                    <button
-                      onClick={() => {
-                        const newGroupBySource = !groupBySource
-                        setGroupBySource(newGroupBySource)
-                        if (query) {
-                          // 그룹핑 옵션 변경 후 즉시 다시 검색
-                          handleSearch(query, 1)
-                        }
-                      }}
-                      className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
-                        groupBySource
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                      }`}
-                    >
-                      📑 출처별 그룹핑
-                    </button>
-                  </div>
-
-                  {/* 페이지네이션 */}
-                  <div className="flex items-center space-x-2">
-                    <button
-                      onClick={handlePrevPage}
-                      disabled={currentPage <= 1}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        currentPage <= 1
-                          ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                          : 'bg-blue-500 text-white hover:bg-blue-600'
-                      }`}
-                    >
-                      ← 이전
-                    </button>
-                    <span className="px-3 py-2 bg-gray-100 rounded-lg text-sm font-medium">
-                      {currentPage}
-                    </span>
-                    <button
-                      onClick={handleNextPage}
-                      disabled={!searchResult.has_next_page}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        !searchResult.has_next_page
-                          ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                          : 'bg-blue-500 text-white hover:bg-blue-600'
-                      }`}
-                    >
-                      다음 →
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* 기사 표시 */}
-              {groupBySource ? (
-                // 출처별 그룹핑 표시 (백엔드에서 받은 데이터 사용)
-                <div className="space-y-8">
-                  {Object.entries(searchResult.articles_by_source || {}).map(([source, articles]) => (
-                    <div key={source} className="space-y-4">
-                      {/* 출처 헤더 */}
-                      <div className="border-b border-gray-200 pb-2">
-                        <h3 className="text-lg font-semibold text-gray-800 flex items-center">
-                          📰 {source}
-                          <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full">
-                            {articles.length}개
-                          </span>
-                        </h3>
-                      </div>
-                      
-                      {/* 출처별 기사 그리드 */}
-                      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                        {articles.map((article: NewsArticle, index: number) => (
-                          <NewsCard key={`${source}-${currentPage}-${index}`} article={article} />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                // 기본 그리드 표시
-                <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                  {searchResult.articles.map((article: NewsArticle, index: number) => (
-                    <NewsCard key={`${currentPage}-${index}`} article={article} />
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="text-center py-12 text-gray-500">
-              {selectedSitesCount === 0 ? (
-                <div>
-                  <p>검색할 사이트를 선택해주세요.</p>
-                  <button
-                    onClick={() => setShowSiteFilter(true)}
-                    className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                  >
-                    사이트 선택하기
-                  </button>
-                </div>
-              ) : (
-                '검색 결과가 없습니다. 다른 키워드로 시도해보세요.'
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* 초기 안내 */}
     </div>
