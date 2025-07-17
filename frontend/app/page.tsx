@@ -72,13 +72,15 @@ export default function Home() {
     { id: 'world', name: '국제', icon: '🌍' }
   ]
 
-  // 컴포넌트 마운트 시 트렌딩 뉴스 로드
+  // 컴포넌트 마운트 시에만 초기 로드
   useEffect(() => {
     loadTrendingNews('all')
-    
-    // 30분(1800초)마다 자동 업데이트
+  }, []) // 빈 dependency로 초기 마운트 시에만 실행
+
+  // 자동 새로고침 타이머 (selectedCategory 변경과 분리)
+  useEffect(() => {
     const autoRefreshInterval = setInterval(() => {
-      if (showTrending) {
+      if (showTrending && viewMode === 'trending') {
         loadTrendingNews(selectedCategory)
         console.log('트렌딩 뉴스 자동 업데이트')
       }
@@ -88,11 +90,25 @@ export default function Home() {
     return () => {
       clearInterval(autoRefreshInterval)
     }
-  }, [showTrending, selectedCategory])
+  }, [showTrending, selectedCategory, viewMode])
 
   // 수동 새로고침 함수
   const refreshTrendingNews = () => {
     loadTrendingNews(selectedCategory)
+  }
+
+  // 카테고리 변경 핸들러
+  const handleCategoryChange = (categoryId: string) => {
+    // 스트리밍 상태 완전 초기화
+    setStreamingBySource({})
+    setStreamingActiveSources([])
+    setStreamingMessages([])
+    setStreamingProgress(null)
+    setIsStreamingComplete(false)
+    setTrendingNews(null) // 기존 일반 모드 결과도 초기화
+    
+    // 새 카테고리로 로드
+    loadTrendingNews(categoryId)
   }
 
   const loadTrendingNews = async (category: string = 'all') => {
@@ -951,7 +967,7 @@ export default function Home() {
             {categories.map((category) => (
               <button
                 key={category.id}
-                onClick={() => loadTrendingNews(category.id)}
+                onClick={() => handleCategoryChange(category.id)}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                   selectedCategory === category.id
                     ? 'bg-blue-500 text-white'
@@ -969,7 +985,28 @@ export default function Home() {
               <input
                 type="checkbox"
                 checked={useStreamMode}
-                onChange={(e) => setUseStreamMode(e.target.checked)}
+                onChange={(e) => {
+                  const newStreamMode = e.target.checked
+                  setUseStreamMode(newStreamMode)
+                  
+                  // 모드 변경 시 상태 초기화하고 현재 카테고리 다시 로드
+                  if (newStreamMode) {
+                    // 스트리밍 모드로 변경 시 일반 모드 결과 초기화
+                    setTrendingNews(null)
+                  } else {
+                    // 일반 모드로 변경 시 스트리밍 상태 초기화
+                    setStreamingBySource({})
+                    setStreamingActiveSources([])
+                    setStreamingMessages([])
+                    setStreamingProgress(null)
+                    setIsStreamingComplete(false)
+                  }
+                  
+                  // 현재 선택된 카테고리로 다시 로드
+                  setTimeout(() => {
+                    loadTrendingNews(selectedCategory)
+                  }, 100)
+                }}
                 className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
               />
               <span className="text-gray-700">
