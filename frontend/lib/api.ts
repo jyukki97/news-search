@@ -136,6 +136,7 @@ export interface StreamingMessage {
   limit?: number
   sources?: string
   total_completed?: number
+  total_articles?: number
   timestamp: string
 }
 

@@ -692,15 +692,19 @@ async def get_trending_news_stream(
                         yield f"data: {json.dumps(error_message)}\n\n"
                         logger.error(f"스트리밍: {source_name} 오류: {e}")
             
+            # 총 기사 개수 계산
+            total_articles = sum(len(articles) for articles in all_articles_by_source.values())
+            
             # 완료 메시지 전송
             complete_message = {
                 "type": "complete",
                 "message": "모든 사이트 검색 완료",
                 "total_completed": completed_scrapers,
+                "total_articles": total_articles,
                 "timestamp": datetime.now().isoformat()
             }
             yield f"data: {json.dumps(complete_message)}\n\n"
-            logger.info(f"스트리밍 트렌딩 뉴스 완료: {completed_scrapers}/{total_scrapers} 사이트 처리")
+            logger.info(f"스트리밍 트렌딩 뉴스 완료: {completed_scrapers}/{total_scrapers} 사이트 처리, 총 {total_articles}개 기사")
             
         except Exception as e:
             # 전체 에러 메시지 전송

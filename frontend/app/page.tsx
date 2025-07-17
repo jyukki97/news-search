@@ -256,7 +256,7 @@ export default function Home() {
       const result = await searchNews(
         searchQuery, 
         page, 
-        3, // 각 사이트에서 3개씩
+        10, // 각 사이트에서 10개씩
         sourcesParam, // 선택된 사이트들만
         sortOption, // 선택된 정렬 방식
         dateFrom || undefined,
