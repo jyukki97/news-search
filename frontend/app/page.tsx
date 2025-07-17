@@ -979,7 +979,8 @@ export default function Home() {
           </div>
 
                   {/* 트렌딩 뉴스 내용 */}
-        {(trendingLoading && useStreamMode) || (useStreamMode && Object.keys(streamingBySource).length > 0) ? (
+        {useStreamMode ? (
+          // 스트리밍 모드
           <div className="space-y-6">
             {/* 스트리밍 진행률 */}
             {streamingProgress && trendingLoading && (
@@ -1016,7 +1017,7 @@ export default function Home() {
             )}
 
             {/* 스트리밍 결과 (사이트별로 실시간 표시) */}
-            {Object.keys(streamingBySource).length > 0 && (
+            {Object.keys(streamingBySource).length > 0 ? (
               <div className="space-y-8">
                 {Object.entries(streamingBySource).map(([source, articles]) => (
                   <div key={source} className="space-y-4 animate-fade-in">
@@ -1040,9 +1041,19 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+            ) : trendingLoading ? (
+              <div className="text-center py-8">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <p className="mt-2 text-gray-600">스트리밍 트렌딩 뉴스 로딩 중...</p>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                카테고리를 선택하여 트렌딩 뉴스를 확인하세요.
+              </div>
             )}
           </div>
         ) : trendingLoading ? (
+          // 일반 모드 로딩
           <div className="text-center py-8">
             <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
             <p className="mt-2 text-gray-600">트렌딩 뉴스 로딩 중...</p>

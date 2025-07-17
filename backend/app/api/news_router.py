@@ -605,6 +605,7 @@ async def get_trending_news_stream(
             
             total_scrapers = len(selected_scrapers)
             completed_scrapers = 0
+            all_articles_by_source = {}  # 수정: 누락된 변수 추가
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # 모든 스크래퍼 실행
@@ -624,6 +625,9 @@ async def get_trending_news_stream(
                         completed_scrapers += 1
                         
                         if articles:
+                            # 기사를 저장
+                            all_articles_by_source[source_name] = articles[:limit]
+                            
                             # 성공 메시지 전송
                             success_message = {
                                 "type": "source_complete",
