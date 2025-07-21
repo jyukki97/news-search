@@ -47,8 +47,8 @@ export interface TrendingResponse {
   last_updated: string
 }
 
-// API 기본 URL - localhost 사용 (CORS 설정과 일치)
-const API_BASE_URL = 'http://localhost:8000'
+// API 기본 URL - 환경변수 사용 (기본값: localhost)
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // API 요청 헬퍼 함수
 async function apiRequest<T>(endpoint: string, timeoutMs: number = 15000): Promise<T> {

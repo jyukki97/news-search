@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: news-search-backend
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/news/categories
+    envVars:
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+      - key: MAX_WORKERS
+        value: 1
+      - key: CORS_ORIGINS
+        value: https://news-search-frontend.onrender.com,http://localhost:3000
+    autoDeploy: true
+    branch: main 

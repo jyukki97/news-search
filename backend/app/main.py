@@ -10,8 +10,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS 설정 (프론트엔드 연동용)
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3006").split(",")
+# CORS 설정 (프론트엔드 연동용) - Render 배포 지원
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3006")
+if cors_origins == "*":
+    allowed_origins = ["*"]
+else:
+    allowed_origins = [origin.strip() for origin in cors_origins.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,

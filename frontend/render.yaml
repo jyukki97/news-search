@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: news-search-frontend
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: https://news-search-backend.onrender.com
+      - key: NODE_ENV
+        value: production
+    autoDeploy: true
+    branch: main 
