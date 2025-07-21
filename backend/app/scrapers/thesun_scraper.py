@@ -14,29 +14,36 @@ class TheSunScraper:
     
     def __init__(self):
         self.base_url = "https://www.thesun.co.uk"
-        self.search_url = "https://www.thesun.co.uk/"
+        # The Sun은 Google Site Search를 사용하는 것으로 보임
+        self.search_url = "https://www.google.co.uk/search"
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
     def search_news(self, query: str, limit: int = 10) -> List[Dict]:
-        """The Sun에서 뉴스 검색"""
+        """The Sun에서 뉴스 검색 - Google Site Search 사용"""
         try:
-            logger.info("The Sun search: {}".format(query))
+            logger.info("The Sun search via Google: {}".format(query))
             
-            # The Sun 검색 요청 (URL 패턴: ?s=query)
-            params = {'s': query}
+            # Google Site Search 사용 (site:thesun.co.uk query)
+            search_query = f"site:thesun.co.uk {query}"
+            params = {
+                'q': search_query,
+                'tbm': 'nws',  # news search
+                'num': min(limit * 2, 20)  # 더 많은 결과 요청
+            }
+            
             response = requests.get(self.search_url, params=params, headers=self.headers, timeout=15)
             response.raise_for_status()
             
-            # 검색 결과 추출
-            articles = self._extract_search_results(response.text, limit, query)
+            # Google 검색 결과에서 The Sun 링크들 추출
+            articles = self._extract_google_thesun_results(response.text, limit, query)
             
-            logger.info("The Sun found {} search results".format(len(articles)))
+            logger.info("The Sun found {} search results via Google".format(len(articles)))
             return articles
             
         except Exception as e:
-            logger.error("The Sun search failed: {}".format(e))
+            logger.error("The Sun search via Google failed: {}".format(e))
             return []
     
     def _extract_search_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:
@@ -290,31 +297,431 @@ class TheSunScraper:
         return 'news'
     
     def get_latest_news(self, category: str = 'news', limit: int = 10) -> List[Dict]:
-        """카테고리별 최신 뉴스"""
-        # 카테고리에 맞는 키워드로 검색
-        category_keywords = {
-            'news': 'breaking news',
-            'sport': 'football',
-            'business': 'money',
-            'technology': 'tech',
-            'health': 'health',
-            'entertainment': 'showbiz'
-        }
-        
-        keyword = category_keywords.get(category, 'news')
-        
+        """카테고리별 최신 뉴스 - 실제 The Sun 카테고리 페이지 사용"""
         try:
-            # search_news를 호출해서 결과를 얻음
-            articles = self.search_news(keyword, limit)
+            logger.info(f"The Sun 실제 카테고리별 뉴스 요청: {category}")
             
-            # 결과가 없으면 더 일반적인 키워드로 재시도
-            if not articles:
-                logger.info(f"The Sun {keyword} 검색 결과 없음, 'breaking news'로 재시도")
-                articles = self.search_news('breaking news', limit)
+            # health, sports, entertainment, tech 카테고리는 바로 검색 모드 사용 (카테고리 페이지 파싱이 어려우므로)
+            if category == 'health':
+                logger.info("The Sun health 카테고리 - 직접 검색 모드 사용")
+                return self.search_news('health NHS medical doctor UK healthcare hospital', limit)
+            elif category in ['sport', 'sports']:
+                logger.info("The Sun sport 카테고리 - 직접 검색 모드 사용")
+                return self.search_news('football premier league sport cricket rugby tennis UK', limit)
+            elif category in ['entertainment', 'celebrity']:
+                logger.info("The Sun entertainment 카테고리 - 직접 검색 모드 사용")
+                return self.search_news('celebrity entertainment showbiz TV film music UK', limit)
+            elif category in ['technology', 'tech']:
+                logger.info("The Sun tech 카테고리 - 직접 검색 모드 사용")
+                return self.search_news('technology tech gadgets iPhone Android apps UK', limit)
             
-            return articles
+            # 실제 The Sun 카테고리별 URL들 (사용자 제공 URL 포함)
+            category_urls = {
+                'all': 'https://www.thesun.co.uk',
+                'news': 'https://www.thesun.co.uk/news/',
+                'sports': 'https://www.thesun.co.uk/sport/',
+                'sport': 'https://www.thesun.co.uk/sport/',
+                'business': 'https://www.thesun.co.uk/money/',
+                'technology': 'https://www.thesun.co.uk/tech/',  # 사용자 제공 URL
+                'tech': 'https://www.thesun.co.uk/tech/',
+                'health': 'https://www.thesun.co.uk/health/',
+                'entertainment': 'https://www.thesun.co.uk/fabulous/fabulous-celebrity/',  # 사용자 제공 URL
+                'celebrity': 'https://www.thesun.co.uk/fabulous/fabulous-celebrity/',
+                'world': 'https://www.thesun.co.uk/news/worldnews/',
+                'politics': 'https://www.thesun.co.uk/news/politics/',
+                'travel': 'https://www.thesun.co.uk/travel/'
+            }
+            
+            url = category_urls.get(category, category_urls['news'])
+            logger.info(f"The Sun 카테고리 페이지 접근: {url}")
+            
+            # 실제 카테고리 페이지에서 기사 추출
+            try:
+                response = requests.get(url, headers=self.headers, timeout=15)
+                response.raise_for_status()
+                
+                articles = self._extract_thesun_category_articles(response.text, limit, category)
+                
+                if articles:
+                    logger.info(f"The Sun {category} 카테고리에서 {len(articles)}개 기사 추출")
+                    return articles
+                else:
+                    logger.info(f"The Sun {category} 카테고리 추출 실패, 검색으로 폴백")
+                    
+            except Exception as e:
+                logger.warning(f"The Sun 카테고리 페이지 접근 실패: {e}, 검색으로 폴백")
+            
+            # 폴백: 카테고리별 키워드 검색 (기존 로직 개선)
+            category_keywords = {
+                'news': 'breaking news UK',
+                'sports': 'football premier league',
+                'sport': 'football premier league',
+                'business': 'money economy UK',
+                'technology': 'tech innovation',
+                'tech': 'tech innovation',
+                'health': 'health NHS medical',
+                'entertainment': 'celebrity showbiz TV',
+                'world': 'world international news',
+                'politics': 'politics UK government'
+            }
+            
+            keyword = category_keywords.get(category, 'breaking news')
+            logger.info(f"The Sun 검색 폴백: {category} -> {keyword}")
+            
+            return self.search_news(keyword, limit)
             
         except Exception as e:
-            logger.error(f"The Sun 최신 뉴스 실패: {e}")
-            # 최후의 수단으로 빈 리스트 반환
-            return [] 
+            logger.error(f"The Sun 카테고리별 뉴스 실패: {e}")
+            return []
+    
+    def _extract_thesun_category_articles(self, html_content: str, limit: int, category: str) -> List[Dict]:
+        """The Sun 카테고리 페이지에서 기사 추출 - 개선된 로직"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            logger.info(f"The Sun HTML 길이: {len(html_content)}")
+            
+            # The Sun 기사 링크를 위한 개선된 선택자들
+            article_selectors = [
+                # 실제 The Sun 웹사이트 구조 기반 선택자들
+                'h2 a[href*="/sport/"]',
+                'h3 a[href*="/sport/"]', 
+                'h4 a[href*="/sport/"]',
+                'h2 a[href*="/health/"]',
+                'h3 a[href*="/health/"]',
+                'h4 a[href*="/health/"]',
+                # 더 구체적인 The Sun 선택자들
+                'a[href*="thesun.co.uk/sport/"]',
+                'a[href*="thesun.co.uk/health/"]',
+                'a[href*="thesun.co.uk/news/"]',
+                # 일반적인 링크들 (thesun.co.uk 포함)
+                'a[href*="thesun.co.uk"][href*="/"]'
+            ]
+            
+            found_urls = set()
+            
+            for selector in article_selectors:
+                try:
+                    links = soup.select(selector)
+                    logger.info(f"The Sun {selector}: {len(links)}개 링크 발견")
+                    
+                    for link in links:
+                        try:
+                            title = link.get_text(strip=True)
+                            url = link.get('href', '')
+                            
+                            # 기본 검증 강화
+                            if not title or len(title) < 10:
+                                continue
+                                
+                            if not url:
+                                continue
+                                
+                            # URL 정규화
+                            if url.startswith('/'):
+                                url = 'https://www.thesun.co.uk' + url
+                            elif not url.startswith('http'):
+                                continue
+                            
+                            # The Sun URL 확인
+                            if 'thesun.co.uk' not in url:
+                                continue
+                            
+                            # 카테고리 필터링 개선 (요청된 카테고리와 맞는지 확인)
+                            if category == 'health' and '/health/' not in url:
+                                continue
+                            elif category in ['sport', 'sports'] and '/sport/' not in url:
+                                continue
+                                
+                            # 중복 확인
+                            if url in found_urls:
+                                continue
+                            found_urls.add(url)
+                            
+                            # 불필요한 링크 필터링 강화
+                            skip_patterns = [
+                                '/search', '/login', '/register', '/subscribe', 
+                                '/contact', '/about', '/terms', '/privacy',
+                                '/author/', '/tag/', '/feed/', '/sign-up',
+                                '/editorial-complaints', '/policies', '/cookie'
+                            ]
+                            
+                            if any(skip in url.lower() for skip in skip_patterns):
+                                continue
+                                
+                            # 불필요한 제목들 필터링 강화
+                            skip_titles = [
+                                'follow us', 'subscribe', 'newsletter', 'login',
+                                'register', 'contact us', 'privacy policy',
+                                'terms of service', 'cookie policy', 'sign up',
+                                'editorial complaints', 'policies and ethics'
+                            ]
+                            
+                            if any(skip in title.lower() for skip in skip_titles):
+                                continue
+                            
+                            # 링크 주변에서 정보 추출
+                            parent = link.parent
+                            context = parent.parent if parent and parent.parent else parent if parent else link
+                            
+                            # 요약 추출
+                            summary = self._extract_thesun_summary(context, title)
+                            
+                            # 이미지 추출
+                            image_url = self._extract_thesun_image(link, url)
+                            
+                            # 날짜 추출
+                            published_date = self._extract_thesun_date(context, url)
+                            
+                            # 카테고리 추출
+                            article_category = self._extract_thesun_category_from_url(url) or category
+                            
+                            article = {
+                                'title': title,
+                                'url': url,
+                                'summary': summary[:300] if summary else title[:200],
+                                'published_date': published_date,
+                                'source': 'The Sun',
+                                'category': article_category,
+                                'scraped_at': datetime.now().isoformat(),
+                                'relevance_score': 1,
+                                'image_url': image_url
+                            }
+                            
+                            articles.append(article)
+                            logger.info(f"The Sun 기사 추가: {title[:50]}...")
+                            
+                            if len(articles) >= limit:
+                                break
+                                
+                        except Exception as e:
+                            logger.debug(f"The Sun 개별 기사 처리 실패: {e}")
+                            continue
+                    
+                    if len(articles) >= limit:
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"The Sun selector {selector} 처리 실패: {e}")
+                    continue
+            
+            logger.info(f"The Sun 총 {len(articles)}개 기사 추출됨")
+                    
+        except Exception as e:
+            logger.error(f"The Sun 카테고리 HTML 파싱 실패: {e}")
+        
+        return articles[:limit]
+    
+    def _extract_thesun_summary(self, element, title: str) -> str:
+        """The Sun 기사에서 요약 추출"""
+        summary = ''
+        
+        try:
+            if hasattr(element, 'find_all'):
+                summary_selectors = ['p', '.excerpt', '.summary', '.description']
+                
+                for selector in summary_selectors:
+                    elements = element.find_all(selector)
+                    
+                    for elem in elements:
+                        text = elem.get_text(strip=True)
+                        
+                        if (len(text) > 30 and len(text) < 500 and
+                            text != title and
+                            not text.startswith('The Sun') and
+                            not text.lower().startswith('click here') and
+                            'thesun.co.uk' not in text.lower()):
+                            
+                            summary = text
+                            break
+                    
+                    if summary:
+                        break
+                        
+        except Exception as e:
+            logger.debug(f"The Sun 요약 추출 실패: {e}")
+        
+        return summary
+    
+    def _extract_thesun_image(self, link_elem, article_url: str) -> str:
+        """The Sun 기사에서 이미지 추출"""
+        try:
+            if hasattr(link_elem, 'find'):
+                img_elem = link_elem.find('img')
+                if img_elem:
+                    for attr in ['src', 'data-src', 'data-lazy-src']:
+                        img_src = img_elem.get(attr, '')
+                        if img_src and ('thesun.co.uk' in img_src or img_src.startswith('//')):
+                            if img_src.startswith('//'):
+                                return 'https:' + img_src
+                            elif img_src.startswith('/'):
+                                return 'https://www.thesun.co.uk' + img_src
+                            return img_src
+        except Exception as e:
+            logger.debug(f"The Sun 이미지 추출 실패: {e}")
+        
+        return ''
+    
+    def _extract_thesun_date(self, element, url: str) -> str:
+        """The Sun 기사에서 날짜 추출"""
+        try:
+            if hasattr(element, 'get_text'):
+                text = element.get_text()
+                
+                date_patterns = [
+                    r'(\d{1,2}\s+\w+\s+\d{4})',  # 17 July 2025
+                    r'(\w+\s+\d{1,2},\s*\d{4})',  # July 17, 2025
+                    r'(\d{1,2}/\d{1,2}/\d{4})',  # 17/07/2025
+                    r'(\d{4}-\d{1,2}-\d{1,2})'   # 2025-07-17
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        try:
+                            date_str = match.group(0)
+                            for fmt in ['%d %B %Y', '%B %d, %Y', '%d %b %Y', '%b %d, %Y', '%d/%m/%Y', '%Y-%m-%d']:
+                                try:
+                                    date_obj = datetime.strptime(date_str, fmt)
+                                    return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                                except:
+                                    continue
+                        except:
+                            continue
+                            
+        except Exception as e:
+            logger.debug(f"The Sun 날짜 추출 실패: {e}")
+        
+        return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    
+    def _extract_thesun_category_from_url(self, url: str) -> str:
+        """The Sun URL에서 카테고리 추출 - 업데이트된 URL 패턴 포함"""
+        try:
+            if '/sport/' in url:
+                return 'sports'
+            elif '/money/' in url:
+                return 'business'
+            elif '/tech/' in url:
+                return 'technology'
+            elif '/health/' in url:
+                return 'health'
+            elif '/fabulous/fabulous-celebrity/' in url or '/celebrity/' in url:
+                return 'entertainment'
+            elif '/tv/' in url or '/showbiz/' in url or '/entertainment/' in url:
+                return 'entertainment'
+            elif '/news/' in url:
+                return 'news'
+            else:
+                return 'news'
+        except:
+            return 'news' 
+
+    def _extract_google_thesun_results(self, html_content: str, limit: int, query: str = '') -> List[Dict]:
+        """Google 검색 결과에서 The Sun 기사들 추출"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Google 뉴스 검색 결과 선택자들
+            result_selectors = [
+                'div[data-ved] h3 a',  # 일반적인 Google 검색 결과
+                '.g h3 a',  # Google 검색 결과
+                'a[href*="thesun.co.uk"]',  # The Sun 링크 직접 찾기
+                '.yuRUbf a',  # Google 검색 결과 새 포맷
+            ]
+            
+            found_urls = set()
+            
+            for selector in result_selectors:
+                elements = soup.select(selector)
+                logger.info(f"Google {selector}: {len(elements)}개 결과")
+                
+                for element in elements:
+                    try:
+                        url = element.get('href', '')
+                        title = element.get_text(strip=True)
+                        
+                        # Google 리다이렉트 URL 처리
+                        if url.startswith('/url?q='):
+                            import urllib.parse
+                            parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                            if 'q' in parsed:
+                                url = parsed['q'][0]
+                        
+                        # 기본 검증
+                        if not url or not title or len(title) < 10:
+                            continue
+                            
+                        # The Sun URL인지 확인
+                        if 'thesun.co.uk' not in url:
+                            continue
+                            
+                        # 중복 제거
+                        if url in found_urls:
+                            continue
+                        found_urls.add(url)
+                        
+                        # 불필요한 링크 필터링
+                        skip_patterns = [
+                            '/search', '/login', '/register', '/subscribe',
+                            '/contact', '/about', '/terms', '/privacy',
+                            '/author/', '/tag/', '/feed/', '/sign-up'
+                        ]
+                        
+                        if any(skip in url.lower() for skip in skip_patterns):
+                            continue
+                        
+                        # 부모 요소에서 더 많은 정보 찾기
+                        parent = element.parent
+                        context = parent.parent if parent and parent.parent else parent if parent else element
+                        
+                        # 요약 텍스트 찾기 (Google 검색 결과에서)
+                        summary = ''
+                        if hasattr(context, 'find_all'):
+                            summary_elems = context.find_all(['span', 'div'], limit=3)
+                            for summary_elem in summary_elems:
+                                text = summary_elem.get_text(strip=True)
+                                if (len(text) > 30 and len(text) < 300 and 
+                                    text != title and 
+                                    'google' not in text.lower() and
+                                    'search' not in text.lower()):
+                                    summary = text
+                                    break
+                        
+                        # 카테고리 추출
+                        category = self._extract_thesun_category_from_url(url)
+                        
+                        # 날짜 (현재 시간 사용)
+                        published_date = datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+                        
+                        article = {
+                            'title': title,
+                            'url': url,
+                            'summary': summary[:300] if summary else title[:200],
+                            'published_date': published_date,
+                            'source': 'The Sun',
+                            'category': category,
+                            'scraped_at': datetime.now().isoformat(),
+                            'relevance_score': 1,
+                            'image_url': ''
+                        }
+                        
+                        articles.append(article)
+                        logger.info(f"Google에서 The Sun 기사 추가: {title[:50]}...")
+                        
+                        if len(articles) >= limit:
+                            break
+                            
+                    except Exception as e:
+                        logger.debug(f"Google 결과 처리 실패: {e}")
+                        continue
+                
+                if len(articles) >= limit:
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Google 검색 결과 파싱 실패: {e}")
+        
+        return articles[:limit] 

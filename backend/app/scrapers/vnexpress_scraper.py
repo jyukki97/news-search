@@ -11,15 +11,15 @@ import time
 logger = logging.getLogger(__name__)
 
 class VNExpressScraper:
-    """VN Express 뉴스 스크래퍼 (e.vnexpress.net)"""
+    """VN Express 뉴스 스크래퍼 (vnexpress.net - 베트남어 사이트)"""
     
     def __init__(self):
-        self.base_url = "https://e.vnexpress.net"
-        self.search_url = "https://e.vnexpress.net/search"
+        self.base_url = "https://vnexpress.net"  # 베트남어 메인 사이트 사용
+        self.search_url = "https://vnexpress.net/search"
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',  # 베트남어 우선
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
@@ -32,9 +32,9 @@ class VNExpressScraper:
             
             # VN Express 검색 URL 패턴
             search_urls = [
-                f"https://e.vnexpress.net/search?q={query}",
-                f"https://e.vnexpress.net/category/news?search={query}",
-                f"https://e.vnexpress.net/?s={query}"
+                f"https://vnexpress.net/search?q={query}",
+                f"https://vnexpress.net/category/news?search={query}",
+                f"https://vnexpress.net/?s={query}"
             ]
             
             for search_url in search_urls:
@@ -234,20 +234,22 @@ class VNExpressScraper:
         """URL에서 카테고리 추출"""
         try:
             # VN Express URL 패턴에서 카테고리 추출
-            if '/news/' in url:
+            if '/thoi-su' in url:
                 return 'news'
-            elif '/business/' in url:
+            elif '/kinh-doanh' in url:
                 return 'business'
-            elif '/sports/' in url:
+            elif '/the-thao' in url:
                 return 'sports'
-            elif '/tech/' in url or '/technology/' in url:
+            elif '/khoa-hoc-cong-nghe' in url:
                 return 'technology'
-            elif '/world/' in url:
+            elif '/the-gioi' in url:
                 return 'world'
-            elif '/travel/' in url:
+            elif '/du-lich' in url:
                 return 'travel'
-            elif '/life/' in url:
+            elif '/doi-song' in url:
                 return 'lifestyle'
+            elif '/suc-khoe' in url:
+                return 'health'
             else:
                 return 'news'
         except:
@@ -256,15 +258,21 @@ class VNExpressScraper:
     def get_latest_news(self, category: str = 'news', limit: int = 10) -> List[Dict]:
         """VN Express 최신 뉴스 가져오기"""
         try:
-            # 카테고리별 URL 매핑
+            # 카테고리별 URL 매핑 (실제 VN Express 베트남어 사이트 구조)
             category_urls = {
-                'news': f"{self.base_url}/news",
-                'business': f"{self.base_url}/business",
-                'sports': f"{self.base_url}/sports", 
-                'tech': f"{self.base_url}/tech",
-                'world': f"{self.base_url}/world",
-                'travel': f"{self.base_url}/travel",
-                'all': self.base_url
+                'all': self.base_url,  # 메인 홈페이지
+                'news': f"{self.base_url}/thoi-su",  # 시사
+                'business': f"{self.base_url}/kinh-doanh",  # 경제/비즈니스
+                'sports': f"{self.base_url}/the-thao",  # 스포츠 (사용자 제공)
+                'sport': f"{self.base_url}/the-thao", 
+                'tech': f"{self.base_url}/khoa-hoc-cong-nghe",  # 과학기술 (사용자 제공)
+                'technology': f"{self.base_url}/khoa-hoc-cong-nghe",
+                'world': f"{self.base_url}/the-gioi",  # 세계
+                'travel': f"{self.base_url}/du-lich",  # 여행
+                'health': f"{self.base_url}/suc-khoe",  # 건강 (사용자 제공)
+                'life': f"{self.base_url}/doi-song",  # 생활
+                'lifestyle': f"{self.base_url}/doi-song",
+                'entertainment': f"{self.base_url}/giai-tri"  # 엔터테인먼트 (사용자 제공)
             }
             
             url = category_urls.get(category, category_urls['news'])
@@ -280,7 +288,22 @@ class VNExpressScraper:
             # 결과가 없거나 적으면 search_news로 fallback
             if not articles or len(articles) < limit // 2:
                 logger.info("VN Express 최신 뉴스 결과 부족, 검색으로 fallback")
-                return self.search_news('breaking news', limit)
+                # 카테고리별 키워드로 검색 (베트남어 키워드 포함)
+                search_keywords = {
+                    'sports': 'bóng đá thể thao football soccer Vietnam',
+                    'sport': 'bóng đá thể thao football soccer Vietnam', 
+                    'business': 'kinh tế kinh doanh economy market Vietnam',
+                    'technology': 'công nghệ khoa học tech startup innovation Vietnam',
+                    'tech': 'công nghệ khoa học tech startup innovation Vietnam',
+                    'world': 'thế giới quốc tế international global news',
+                    'health': 'sức khỏe y tế health medical Vietnam',
+                    'life': 'đời sống lifestyle culture Vietnam',
+                    'lifestyle': 'đời sống lifestyle culture Vietnam',
+                    'entertainment': 'giải trí entertainment celebrity Vietnam',
+                    'news': 'Vietnam tin tức breaking news'
+                }
+                keyword = search_keywords.get(category, 'breaking news')
+                return self.search_news(keyword, limit)
             
             return articles
             
@@ -289,7 +312,22 @@ class VNExpressScraper:
             # 404나 다른 오류 시 search_news로 fallback
             logger.info("VN Express 최신 뉴스 실패, 검색으로 fallback")
             try:
-                return self.search_news('breaking news', limit)
+                # 카테고리별 키워드로 검색 (베트남어 키워드 포함)
+                search_keywords = {
+                    'sports': 'bóng đá thể thao football soccer Vietnam',
+                    'sport': 'bóng đá thể thao football soccer Vietnam', 
+                    'business': 'kinh tế kinh doanh economy market Vietnam',
+                    'technology': 'công nghệ khoa học tech startup innovation Vietnam',
+                    'tech': 'công nghệ khoa học tech startup innovation Vietnam',
+                    'world': 'thế giới quốc tế international global news',
+                    'health': 'sức khỏe y tế health medical Vietnam',
+                    'life': 'đời sống lifestyle culture Vietnam',
+                    'lifestyle': 'đời sống lifestyle culture Vietnam',
+                    'entertainment': 'giải trí entertainment celebrity Vietnam',
+                    'news': 'Vietnam tin tức breaking news'
+                }
+                keyword = search_keywords.get(category, 'breaking news')
+                return self.search_news(keyword, limit)
             except Exception as fallback_error:
                 logger.error(f"VN Express fallback 검색도 실패: {fallback_error}")
                 return [] 

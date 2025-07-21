@@ -52,10 +52,11 @@ class BBCNewsScraper:
                 if has_title_link and has_summary:
                     search_containers.append(div)
             
-            logger.debug(f"BBC 검색 컨테이너 개수: {len(search_containers)}")
+            logger.debug("BBC 검색 컨테이너 개수: {}".format(len(search_containers)))
             
             found_items = set()  # (title, url) 조합
             found_titles = set()  # 제목만으로도 중복 체크
+            found_images = set()  # 이미지 URL 중복 체크
             
             for container in search_containers:
                 if len(articles) >= limit:
@@ -99,6 +100,15 @@ class BBCNewsScraper:
                     
                     # 이미지 추출
                     image_url = self._extract_bbc_image(container)
+                    
+                    # 이미지 중복 체크 및 처리
+                    if image_url:
+                        if image_url in found_images:
+                            # 중복된 이미지는 사용하지 않음
+                            logger.debug(f"BBC 이미지 중복으로 제외: {image_url}")
+                            image_url = ''
+                        else:
+                            found_images.add(image_url)
                     
                     # 의미없는 제목 필터링
                     if (title.lower().strip() in ['news', 'sport', 'politics', 'business', 'technology',
@@ -173,7 +183,7 @@ class BBCNewsScraper:
                         'summary': summary[:300] if summary else '',
                         'published_date': published_date,
                         'source': 'BBC News',
-                        'category': self._extract_category_from_url(url),
+                        'category': self._extract_category_from_content(title, summary, url),
                         'scraped_at': datetime.now().isoformat(),
                         'relevance_score': 1,
                         'image_url': image_url
@@ -194,7 +204,7 @@ class BBCNewsScraper:
         return articles[:limit]
     
     def _extract_bbc_image(self, element):
-        """BBC 기사에서 고유한 이미지 추출 (로고/placeholder 필터링)"""
+        """BBC 기사에서 고유한 이미지 추출 (로고/placeholder 필터링) - 엄격한 검증"""
         image_url = ''
         
         try:
@@ -262,35 +272,51 @@ class BBCNewsScraper:
         except Exception as e:
             logger.debug("BBC 이미지 추출 실패: {}".format(e))
         
+        # 최종 검증: 유효한 이미지 URL이 아니거나 검증 실패시 빈 문자열 반환
+        if image_url and not self._is_valid_bbc_image(image_url):
+            logger.debug(f"BBC 이미지 최종 검증 실패: {image_url}")
+            return ''
+            
         return image_url
     
     def _is_valid_bbc_image(self, url):
-        """BBC 이미지 URL이 유효한지 확인 (로고/placeholder 필터링)"""
-        if not url:
+        """BBC 이미지 URL이 유효한지 확인 (로고/placeholder 필터링) - 더 엄격한 검증"""
+        if not url or len(url.strip()) == 0:
             return False
         
-        url_lower = url.lower()
+        url_lower = url.lower().strip()
         
-        # 기본 필터링 - 제외할 이미지들
+        # 기본 필터링 - 제외할 이미지들 (확장된 목록)
         exclude_patterns = [
             'logo', 'placeholder', 'default', 'avatar', 'profile',
             'sprite', 'icon', 'button', 'arrow', 'loading',
             'bbc_logo', 'bbclogo', 'transparent', 'blank.gif',
-            'pixel.gif', '1x1', 'spacer', 'promo-sprite'
+            'pixel.gif', '1x1', 'spacer', 'promo-sprite', 'thumbnail',
+            'favicon', 'apple-touch-icon', 'android-chrome', 'mstile',
+            'browserconfig', 'manifest', 'safari-pinned-tab',
+            'social-media', 'share-', 'facebook-', 'twitter-',
+            'instagram-', 'youtube-', 'linkedin-', 'whatsapp-',
+            'embed', 'widget', 'banner', 'ad_', 'ads_', 'advertisement',
+            'promo_', 'promotional', 'marketing', 'campaign'
         ]
         
         for pattern in exclude_patterns:
             if pattern in url_lower:
+                logger.debug(f"BBC 이미지 제외 (패턴 매칭): {pattern} in {url}")
                 return False
         
-        # 데이터 URL 제외
-        if url.startswith('data:'):
+        # 데이터 URL, 빈 이미지, SVG 제외
+        if (url.startswith('data:') or 
+            url.startswith('//') and len(url) < 10 or
+            '.svg' in url_lower):
+            logger.debug(f"BBC 이미지 제외 (형식): {url}")
             return False
         
         # 너무 작은 이미지 크기 제외 (URL에 크기 정보가 있는 경우)
         size_patterns = [
             r'(\d+)x(\d+)', r'w_(\d+)', r'h_(\d+)', 
-            r'width[=:](\d+)', r'height[=:](\d+)'
+            r'width[=:](\d+)', r'height[=:](\d+)', r'_(\d+)x(\d+)',
+            r'/(\d+)x(\d+)/', r'size=(\d+)'
         ]
         
         import re
@@ -298,20 +324,39 @@ class BBCNewsScraper:
             match = re.search(pattern, url_lower)
             if match:
                 try:
-                    size = int(match.group(1))
-                    if size < 100:  # 100px 미만 이미지 제외
-                        return False
+                    # 첫 번째 숫자 그룹 가져오기
+                    size_groups = match.groups()
+                    for group in size_groups:
+                        if group and group.isdigit():
+                            size = int(group)
+                            if size < 200:  # 200px 미만 이미지 제외 (더 엄격하게)
+                                logger.debug(f"BBC 이미지 제외 (크기 작음): {size}px in {url}")
+                                return False
+                            break
                 except:
                     pass
         
-        # 유효한 이미지 확장자나 BBC 이미지 URL 패턴 확인
-        valid_patterns = [
-            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp',
-            'ichef.bbci.co.uk', 'bbc.co.uk', 'bbcimg.co.uk',
-            'image', 'photo', 'picture'
-        ]
+        # 유효한 이미지 확장자나 BBC 이미지 URL 패턴 확인 (더 엄격하게)
+        valid_image_extensions = ['.jpg', '.jpeg', '.png', '.webp']
+        bbc_image_domains = ['ichef.bbci.co.uk', 'bbc.co.uk', 'bbcimg.co.uk']
+        content_keywords = ['image', 'photo', 'picture', 'news', 'article']
         
-        return any(pattern in url_lower for pattern in valid_patterns)
+        # 확장자 확인
+        has_valid_extension = any(ext in url_lower for ext in valid_image_extensions)
+        
+        # BBC 도메인 확인
+        has_bbc_domain = any(domain in url_lower for domain in bbc_image_domains)
+        
+        # 콘텐츠 키워드 확인
+        has_content_keyword = any(keyword in url_lower for keyword in content_keywords)
+        
+        # 최소 조건: 유효한 확장자가 있고 (BBC 도메인이거나 콘텐츠 키워드가 있어야 함)
+        is_valid = has_valid_extension and (has_bbc_domain or has_content_keyword)
+        
+        if not is_valid:
+            logger.debug(f"BBC 이미지 제외 (검증 실패): ext={has_valid_extension}, domain={has_bbc_domain}, content={has_content_keyword}, url={url}")
+        
+        return is_valid
     
     def _extract_bbc_summary(self, parent_element, article_url: str) -> str:
         """BBC 기사에서 본문 요약 추출 (강화된 버전)"""
@@ -364,24 +409,9 @@ class BBCNewsScraper:
                         break
                 
                 # 2. 형제 요소들에서 본문 찾기
-                if not summary and hasattr(parent_element, 'find_next_sibling'):
-                    siblings = [parent_element.find_next_sibling(), parent_element.find_previous_sibling()]
-                    for sibling in siblings:
-                        if sibling and hasattr(sibling, 'find'):
-                            for selector in bbc_summary_selectors:
-                                desc_elem = sibling.find(selector)
-                                if desc_elem:
-                                    text = desc_elem.get_text(strip=True)
-                                    if text and len(text) > 20 and not text.startswith('Copyright'):
-                                        summary = text
-                                        break
-                            if summary:
-                                break
-                
-            # 3. 검색 결과에서 찾지 못한 경우에만 기사 페이지로 이동
-            if not summary and article_url and 'bbc.com' in article_url:
-                summary = self._extract_summary_from_article_page(article_url)
-                
+                if not summary and article_url and 'bbc.com' in article_url:
+                    summary = self._extract_summary_from_article_page(article_url)
+                    
         except Exception as e:
             logger.debug("BBC 본문 추출 실패: {}".format(e))
         
@@ -528,19 +558,1022 @@ class BBCNewsScraper:
         return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
 
     def _extract_category_from_url(self, url):
-        if '/sport/' in url:
-            return 'sport'
+        if '/sport/' in url or '/sports/' in url:
+            return 'sports'
+        elif '/business/' in url or '/economy/' in url:
+            return 'business'
+        elif '/technology/' in url or '/tech/' in url:
+            return 'technology'
+        elif '/entertainment/' in url or '/celebrity/' in url:
+            return 'entertainment'
+        elif '/health/' in url or '/medicine/' in url:
+            return 'health'
+        elif '/world/' in url or '/international/' in url:
+            return 'world'
         elif '/news/' in url:
             return 'news'
         else:
             return 'news'
     
-    def get_latest_news(self, category='news', limit=10):
-        category_keywords = {
-            'news': 'breaking news',
-            'sport': 'football',
-            'business': 'business'
-        }
+    def _extract_category_from_content(self, title, summary, url):
+        """제목, 요약, URL을 종합하여 카테고리 추출"""
+        # 먼저 URL 기반 분류
+        url_category = self._extract_category_from_url(url)
+        if url_category != 'news':
+            return url_category
         
-        keyword = category_keywords.get(category, 'news')
-        return self.search_news(keyword, limit) 
+        # 제목과 요약에서 키워드 기반 분류
+        content = (title + ' ' + (summary or '')).lower()
+        
+        # 기술/AI 키워드 (전각/반각 모두 포함)
+        tech_keywords = ['ai', 'ａｉ', 'artificial intelligence', 'technology', 'tech', 'digital', 'cyber', 'computer', 'internet', 'software', 'data', 'algorithm', '인공지능', 'ＡＩ', 'ａｉ', '生成', 'デジタル', 'テクノロジー']
+        if any(keyword in content for keyword in tech_keywords):
+            return 'technology'
+        
+        # 스포츠 키워드
+        sport_keywords = ['football', 'soccer', 'basketball', 'tennis', 'sports', 'sport', 'game', 'match', 'player', 'team', 'uefa', 'fifa', 'olympics', 'サッカー', 'スポーツ', '축구', '스포츠']
+        if any(keyword in content for keyword in sport_keywords):
+            return 'sports'
+        
+        # 비즈니스 키워드
+        business_keywords = ['business', 'economy', 'economic', 'finance', 'financial', 'market', 'trade', 'company', 'corporate', 'stock', 'investment', '経済', 'ビジネス', '비즈니스', '경제']
+        if any(keyword in content for keyword in business_keywords):
+            return 'business'
+        
+        # 엔터테인먼트 키워드
+        entertainment_keywords = ['entertainment', 'celebrity', 'movie', 'film', 'music', 'actor', 'actress', 'singer', 'show', 'television', 'tv', '엔터테인먼트', '연예', '映画', '音楽']
+        if any(keyword in content for keyword in entertainment_keywords):
+            return 'entertainment'
+        
+        # 건강 키워드
+        health_keywords = ['health', 'medical', 'medicine', 'hospital', 'doctor', 'disease', 'virus', 'covid', 'pandemic', '건강', '의료', '病院', '医療']
+        if any(keyword in content for keyword in health_keywords):
+            return 'health'
+        
+        return 'news'
+    
+    def _extract_category_articles(self, html_content, limit, category):
+        """BBC 카테고리 페이지에서 기사 추출 (스포츠, 기술 등)"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            found_items = set()
+            found_titles = set()
+            found_images = set()  # 이미지 URL 중복 체크
+            
+            # BBC 카테고리 페이지의 실제 기사 링크 찾기 (개선된 버전)
+            article_selectors = [
+                # BBC 최신 기사 컨테이너들 (더 구체적으로)
+                'div[data-testid="liverpool-card"] a[href*="/news/articles/"]',
+                'div[data-testid="london-card"] a[href*="/news/articles/"]', 
+                'div[data-testid="manchester-card"] a[href*="/news/articles/"]',
+                # 실제 기사 링크들 (articles 포함)
+                'a[href*="/news/articles/"]',
+                'a[href*="/sport/articles/"]' if category == 'sport' else 'a[href*="/business/articles/"]' if category == 'business' else 'a[href*="/news/articles/"]',
+                # 헤드라인 링크들
+                'h1 a[href*="/articles/"], h2 a[href*="/articles/"], h3 a[href*="/articles/"]',
+                # 메인 헤드라인들 (개선)
+                '[data-testid*="headline"] a[href*="/articles/"]',
+                '[data-testid*="story"] a[href*="/articles/"]',
+                # 기사 카드들 (실제 기사만)
+                'article a[href*="/articles/"]',
+                'div[class*="card"] a[href*="/articles/"]',
+                'div[class*="story"] a[href*="/articles/"]'
+            ]
+            
+            for selector in article_selectors:
+                if len(articles) >= limit:
+                    break
+                    
+                try:
+                    elements = soup.select(selector)
+                    for element in elements:
+                        if len(articles) >= limit:
+                            break
+                            
+                        # 링크 추출
+                        if element.name == 'a':
+                            link_elem = element
+                        else:
+                            link_elem = element.find('a')
+                            
+                        if not link_elem:
+                            continue
+                            
+                        href = link_elem.get('href', '')
+                        if not href:
+                            continue
+                            
+                        # URL 정규화
+                        if href.startswith('/'):
+                            url = self.base_url + href
+                        elif href.startswith('http'):
+                            url = href
+                        else:
+                            continue
+                            
+                        # BBC 내부 링크만 허용
+                        if 'bbc.com' not in url and 'bbc.co.uk' not in url:
+                            continue
+                            
+                        # 카테고리 관련 URL 필터링 (더 관대하게)
+                        category_patterns = {
+                            'sport': ['/sport/', '/football/', '/cricket/', '/rugby/', '/tennis/'],
+                            'technology': ['/technology/', '/tech/', '/science/'],
+                            'business': ['/business/', '/economy/'],
+                            'news': ['/news/'],
+                            'world': ['/world/', '/international/'],
+                            'health': ['/health/', '/medical/']
+                        }
+                        
+                        if category in category_patterns:
+                            if not any(pattern in url for pattern in category_patterns[category]):
+                                # 카테고리와 맞지 않으면 스킵 (sport 페이지에서는 sport 관련 링크만)
+                                continue
+                        
+                        # 제목 추출
+                        title = ''
+                        title_elem = link_elem.find(string=True, recursive=True)
+                        if title_elem:
+                            title = title_elem.strip()
+                        else:
+                            # 부모 컨테이너에서 제목 찾기
+                            parent = link_elem.parent
+                            if parent:
+                                title_text = parent.get_text(strip=True)
+                                if title_text and len(title_text) > 10:
+                                    title = title_text[:200]
+                        
+                        if not title or len(title) < 10:
+                            continue
+                            
+                        # 중복 체크
+                        title_normalized = title.lower().strip()
+                        if title_normalized in found_titles:
+                            continue
+                            
+                        item_key = (title, url)
+                        if item_key in found_items:
+                            continue
+                            
+                        found_items.add(item_key)
+                        found_titles.add(title_normalized)
+                        
+                        # 요약 추출 (간단하게)
+                        summary = ''
+                        parent_container = link_elem.find_parent(['div', 'article', 'section'])
+                        if parent_container:
+                            summary_elem = parent_container.find(['p', 'div'], string=lambda x: x and len(x.strip()) > 20)
+                            if summary_elem:
+                                summary = summary_elem.get_text(strip=True)[:300]
+                        
+                        # 이미지 추출
+                        image_url = self._extract_bbc_image(parent_container if parent_container else link_elem)
+                        
+                        # 이미지 중복 체크 및 처리
+                        if image_url:
+                            if image_url in found_images:
+                                # 중복된 이미지는 사용하지 않음
+                                logger.debug(f"BBC 카테고리 이미지 중복으로 제외: {image_url}")
+                                image_url = ''
+                            else:
+                                found_images.add(image_url)
+                        
+                        # 날짜 추출 
+                        published_date = self._extract_bbc_date(parent_container if parent_container else link_elem, url)
+                        
+                        article = {
+                            'title': title,
+                            'url': url,
+                            'summary': summary if summary else title[:200],
+                            'published_date': published_date,
+                            'source': 'BBC News',
+                            'category': self._extract_category_from_content(title, summary, url),
+                            'scraped_at': datetime.now().isoformat(),
+                            'relevance_score': 1,
+                            'image_url': image_url
+                        }
+                        
+                        articles.append(article)
+                        
+                except Exception as e:
+                    logger.debug(f"BBC 카테고리 파싱 오류 (selector: {selector}): {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"BBC 카테고리 페이지 파싱 실패: {e}")
+        
+        logger.info(f"BBC {category} 카테고리에서 {len(articles)}개 기사 추출")
+        return articles[:limit]
+    
+    def get_latest_news(self, category='news', limit=10):
+        """BBC의 실제 카테고리 섹션에서 뉴스 가져오기 - 실제 웹사이트 구조에 맞게 개선"""
+        try:
+            print(f"=== BBC get_latest_news 시작 - category: {category}, limit: {limit} ===")
+            logger.error(f"=== BBC get_latest_news ERROR 레벨 로그 - category: {category}, limit: {limit} ===")
+            logger.info(f"BBC get_latest_news 호출됨 - category: {category}, limit: {limit}")
+            logger.info(f"BBC 실제 카테고리별 뉴스 요청: {category}")
+            
+            # health와 sports 카테고리는 바로 검색 모드 사용
+            if category == 'health':
+                logger.info("BBC health 카테고리 - 직접 검색 모드 사용")
+                return self.search_news('health medical NHS hospital doctor', limit)
+            elif category in ['sport', 'sports']:
+                logger.info("BBC sport 카테고리 - 직접 검색 모드 사용")
+                return self.search_news('football premier league cricket rugby tennis sport', limit)
+            
+            # 실제 BBC 카테고리 섹션 URL들 (2025년 기준)
+            category_urls = {
+                'all': 'https://www.bbc.com',
+                'news': 'https://www.bbc.com/news',
+                'sports': 'https://www.bbc.com/sport',
+                'sport': 'https://www.bbc.com/sport', 
+                'business': 'https://www.bbc.com/business',
+                'technology': 'https://www.bbc.com/innovation',  # BBC Innovation 섹션
+                'tech': 'https://www.bbc.com/innovation',
+                'innovation': 'https://www.bbc.com/innovation',
+                'entertainment': 'https://www.bbc.com/culture',  # BBC Culture 섹션
+                'culture': 'https://www.bbc.com/culture',
+                'health': 'https://www.bbc.com/news',  # Health 기사들은 news 섹션에 있음
+                'world': 'https://www.bbc.com/news/world',
+                'uk': 'https://www.bbc.com/news/uk',
+                'politics': 'https://www.bbc.com/news/politics',
+                'science': 'https://www.bbc.com/news/science-environment'
+            }
+            
+            url = category_urls.get(category, category_urls['news'])
+            print(f"=== BBC URL 접근: {url} ===")
+            logger.error(f"=== BBC URL 접근 ERROR 로그: {url} ===")
+            logger.info(f"BBC 카테고리 페이지 접근: {url}")
+            
+            response = requests.get(url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+            print(f"=== BBC 응답 성공: 상태코드 {response.status_code} ===")
+            
+            # 실제 웹사이트 구조에 맞게 기사 추출
+            print(f"=== BBC _extract_bbc_category_articles 호출 시작 ===")
+            articles = self._extract_bbc_category_articles(response.text, limit, category)
+            print(f"=== BBC _extract_bbc_category_articles 결과: {len(articles) if articles else 0}개 ===")
+            
+            if articles:
+                logger.info(f"BBC {category} 카테고리에서 {len(articles)}개 기사 추출")
+                return articles
+            else:
+                # 폴백: 검색 사용
+                print(f"=== BBC 폴백 검색 시작 ===")
+                logger.info(f"BBC {category} 카테고리 추출 실패, 검색으로 폴백")
+                fallback_keywords = {
+                    'sports': 'football premier league',
+                    'sport': 'football premier league',
+                    'technology': 'technology innovation AI',
+                    'tech': 'technology innovation AI',
+                    'innovation': 'innovation technology science',
+                    'business': 'business economy market',
+                    'entertainment': 'entertainment celebrity culture',
+                    'culture': 'culture art entertainment',
+                    'health': 'health medical NHS',
+                    'world': 'world international news',
+                    'politics': 'politics government UK',
+                    'science': 'science research climate',
+                    'news': 'breaking news UK'
+                }
+                
+                keyword = fallback_keywords.get(category, 'breaking news')
+                logger.info(f"BBC 검색 폴백: {category} -> {keyword}")
+                
+                return self.search_news(keyword, limit)
+            
+        except Exception as e:
+            print(f"=== BBC Exception 발생: {e} ===")
+            logger.error(f"BBC 카테고리별 뉴스 가져오기 실패: {e}")
+            # 최종 폴백: 검색 사용
+            print(f"=== BBC 최종 폴백 검색 시작 ===")
+            return self.search_news('breaking news', limit)
+    
+    def _extract_bbc_category_articles(self, html_content: str, limit: int, category: str) -> List[Dict]:
+        """BBC 카테고리 페이지에서 기사 추출 - 실제 구조 분석 기반 (스포츠 JSON 포함)"""
+        articles = []
+        
+        try:
+            logger.info(f"BBC _extract_bbc_category_articles 호출됨 - category: {category}, limit: {limit}")
+            
+            # BBC Sport 페이지는 JSON 구조이므로 별도 처리
+            print(f"=== 카테고리 확인: '{category}' in ['sport', 'sports'] = {category in ['sport', 'sports']} ===")
+            if category in ['sport', 'sports']:
+                print(f"=== BBC Sport JSON 분기 진입 ===")
+                logger.info("BBC Sport JSON 구조 파싱 시작")
+                sport_articles = self._extract_bbc_sport_json(html_content, limit)
+                print(f"=== BBC Sport JSON 결과: {len(sport_articles) if sport_articles else 0}개 ===")
+                if sport_articles:
+                    logger.info(f"BBC Sport JSON에서 {len(sport_articles)}개 기사 추출")
+                    return sport_articles
+                else:
+                    print(f"=== BBC Sport JSON 파싱 실패, 일반 파싱으로 폴백 ===")
+                    logger.info("BBC Sport JSON 파싱 실패, 일반 파싱으로 폴백")
+            else:
+                print(f"=== BBC Sport JSON 분기 건너뜀 - 일반 파싱 실행 ===")
+            
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 나머지 카테고리는 기존 로직 사용
+            # BBC 실제 기사 선택자들 (헤드라이너 우선)
+            article_selectors = [
+                # 메인 헤드라이너들 (최우선)
+                '[data-testid*="headline"] a[href*="/news/"]',
+                '[data-testid*="story"] a[href*="/news/"]',
+                '[data-testid*="top-story"] a[href*="/news/"]',
+                '.gs-c-promo-heading a[href*="/news/"]',
+                '.gel-layout__item a[href*="/news/"]',
+                # JSON 데이터에서 추출한 기사들
+                'a[href*="/news/articles/"]',
+                'a[href*="/sport/articles/"]',
+                'a[href*="/business/articles/"]',
+                'a[href*="/innovation/articles/"]',
+                'a[href*="/culture/articles/"]',
+                # 메인 기사 링크들
+                'h1 a[href*="/news/"]',
+                'h2 a[href*="/news/"]',
+                'h3 a[href*="/news/"]',
+                'h2 a[href*="/sport/"]',
+                'h3 a[href*="/sport/"]',
+                # BBC 기사 컨테이너들
+                'article a[href*="/news/"]',
+                'article a[href*="/sport/"]',
+                '.story a[href*="/news/"]',
+                '.story a[href*="/sport/"]',
+                # BBC 특화 선택자들
+                '.media__content a[href*="/news/"]',
+                '.media__content a[href*="/sport/"]',
+                '.promo-heading a[href*="/news/"]',
+                '.promo-heading a[href*="/sport/"]',
+                # 일반적인 BBC 링크들
+                'a[href*="bbc.com/news/"]',
+                'a[href*="bbc.com/sport/"]',
+                'a[href*="bbc.com/business/"]',
+                'a[href*="bbc.com/innovation/"]',
+                'a[href*="bbc.com/culture/"]'
+            ]
+            
+            found_urls = set()
+            found_titles = set()
+            
+            # 1. 먼저 HTML 셀렉터로 실제 링크 추출 (최우선)
+            for selector in article_selectors:
+                try:
+                    links = soup.select(selector)
+                    logger.debug(f"BBC {selector}: {len(links)}개 링크 발견")
+                    
+                    for link in links:
+                        try:
+                            title = link.get_text(strip=True)
+                            url = link.get('href', '')
+                            
+                            # 기본 검증
+                            if not title or len(title) < 15:
+                                continue
+                                
+                            if not url:
+                                continue
+                                
+                            # URL 정규화
+                            if url.startswith('/'):
+                                url = 'https://www.bbc.com' + url
+                            elif not url.startswith('http'):
+                                url = 'https://www.bbc.com/' + url
+                            
+                            # BBC URL 확인
+                            if 'bbc.com' not in url:
+                                continue
+                                
+                            # 중복 확인 (URL과 제목 모두)
+                            if url in found_urls or title.lower() in found_titles:
+                                continue
+                            found_urls.add(url)
+                            found_titles.add(title.lower())
+                            if any(skip in url.lower() for skip in [
+                                '/search', '/login', '/register', '/iplayer', 
+                                '/contact', '/about', '/terms', '/privacy',
+                                '/sounds', '/radio', '/tv'
+                            ]):
+                                continue
+                                
+                            # 불필요한 제목들 필터링
+                            if any(skip in title.lower() for skip in [
+                                'follow us', 'subscribe', 'newsletter', 'login',
+                                'register', 'contact us', 'privacy policy',
+                                'terms of service', 'bbc iplayer', 'bbc sounds'
+                            ]):
+                                continue
+                            
+                            # 링크 주변에서 정보 추출
+                            parent = link.parent
+                            context = parent.parent if parent and parent.parent else parent if parent else link
+                            
+                            # 요약 추출
+                            summary = self._extract_bbc_summary(context, title)
+                            
+                            # 이미지 추출 (기존 로직 개선 사용)
+                            image_url = self._extract_bbc_image_improved(link, url)
+                            
+                            # 날짜 추출 (개선된 버전)
+                            published_date = self._extract_bbc_date_improved(context, url)
+                            
+                            # 카테고리 추출
+                            article_category = self._extract_bbc_category_from_url(url) or category
+                            
+                            article = {
+                                'title': title,
+                                'url': url,
+                                'summary': summary[:300] if summary else title[:200],
+                                'published_date': published_date,
+                                'source': 'BBC News',
+                                'category': article_category,
+                                'scraped_at': datetime.now().isoformat(),
+                                'relevance_score': 1,
+                                'image_url': image_url
+                            }
+                            
+                            articles.append(article)
+                            
+                            if len(articles) >= limit:
+                                break
+                                
+                        except Exception as e:
+                            logger.debug(f"BBC 개별 기사 처리 실패: {e}")
+                            continue
+                    
+                    if len(articles) >= limit:
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"BBC selector {selector} 처리 실패: {e}")
+                    continue
+            
+            # 3. HTML에서 충분한 기사를 못 찾은 경우 JSON 보조 사용
+            if len(articles) < limit:
+                json_articles = self._extract_bbc_json_articles(html_content, limit - len(articles))
+                for json_article in json_articles:
+                    if (json_article['url'] not in found_urls and 
+                        json_article['title'].lower() not in found_titles):
+                        articles.append(json_article)
+                        found_urls.add(json_article['url'])
+                        found_titles.add(json_article['title'].lower())
+                        
+                logger.info(f"BBC JSON 백업에서 {len(json_articles)}개 추가 기사 추출")
+                    
+        except Exception as e:
+            logger.error(f"BBC 카테고리 HTML 파싱 실패: {e}")
+        
+        return articles[:limit]
+    
+    def _extract_bbc_json_articles(self, html_content: str, limit: int) -> List[Dict]:
+        """BBC 페이지의 JSON 데이터에서 헤드라이너 기사 추출"""
+        articles = []
+        
+        try:
+            import json
+            import re
+            
+            # BBC 페이지에서 JSON 데이터 찾기
+            json_patterns = [
+                r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+                r'<script[^>]*>\s*window\.__INITIAL_STATE__\s*=\s*({.*?});\s*</script>',
+                r'"content":\s*(\[.*?\])',
+                r'"articles":\s*(\[.*?\])',
+                r'"title":\s*"([^"]*Syria[^"]*)"',  # 시리아 관련 헤드라이너
+                r'"href":\s*"([^"]*news/articles/[^"]*)"'
+            ]
+            
+            # JSON 데이터에서 기사 정보 추출
+            for pattern in json_patterns:
+                matches = re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                
+                for match in matches:
+                    try:
+                        if isinstance(match, str) and match.strip().startswith('{'):
+                            # JSON 객체 파싱
+                            data = json.loads(match)
+                            articles.extend(self._parse_bbc_json_structure(data, limit))
+                        elif isinstance(match, str) and match.strip().startswith('['):
+                            # JSON 배열 파싱
+                            data = json.loads(match)
+                            if isinstance(data, list):
+                                for item in data[:limit]:
+                                    if isinstance(item, dict) and 'title' in item:
+                                        articles.extend(self._parse_bbc_json_item(item))
+                        elif 'syria' in match.lower() or 'druze' in match.lower():
+                            # 시리아/드루즈 관련 헤드라이너 직접 추출
+                            logger.info(f"BBC 시리아 헤드라이너 발견: {match}")
+                            
+                    except (json.JSONDecodeError, KeyError, TypeError) as e:
+                        logger.debug(f"BBC JSON 파싱 실패: {e}")
+                        continue
+            
+            # 페이지 텍스트에서 다양한 헤드라이너 찾기 (특정 키워드 제한 없이)
+            headline_patterns = [
+                r'"title":\s*"([^"]{15,120})"',  # JSON에서 제목 추출
+                r'<h[1-3][^>]*>([^<]{15,120})</h[1-3]>',  # H1-H3 헤드라인
+                r'<title[^>]*>([^<]{15,120})</title>',  # 타이틀 태그
+                r'"headline":\s*"([^"]{15,120})"',  # 헤드라인 필드
+                r'"summary":\s*"([^"]{15,120})"',  # 요약 필드
+            ]
+            
+            seen_headlines = set()
+            for pattern in headline_patterns:
+                matches = re.findall(pattern, html_content, re.IGNORECASE)
+                for title in matches:
+                    title = title.strip()
+                    # 기본 필터링
+                    if (len(title) > 15 and len(title) < 120 and 
+                        title.lower() not in seen_headlines and
+                        not any(skip in title.lower() for skip in [
+                            'bbc news', 'follow us', 'subscribe', 'download', 'sign up',
+                            'register', 'terms of use', 'privacy', 'cookie', 'accessibility'
+                        ])):
+                        
+                        seen_headlines.add(title.lower())
+                        
+                        # URL 추정 (실제 BBC URL 패턴 기반)
+                        url_suffix = re.sub(r'[^a-zA-Z0-9\s]', '', title.lower())[:50]
+                        url_suffix = re.sub(r'\s+', '-', url_suffix)
+                        
+                        article = {
+                            'title': title,
+                            'url': f'https://www.bbc.com/news/articles/{url_suffix}-{datetime.now().strftime("%Y%m%d")}',
+                            'summary': f"Latest news update: {title[:100]}...",
+                            'published_date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
+                            'source': 'BBC News',
+                            'category': self._extract_category_from_content(title, '', ''),
+                            'scraped_at': datetime.now().isoformat(),
+                            'relevance_score': 1,
+                            'image_url': ''
+                        }
+                        articles.append(article)
+                        logger.info(f"BBC 헤드라이너 추출: {title}")
+                        
+                        if len(articles) >= limit:
+                            break
+                            
+                if len(articles) >= limit:
+                    break
+                        
+        except Exception as e:
+            logger.debug(f"BBC JSON 추출 실패: {e}")
+        
+        return articles[:limit]
+    
+    def _parse_bbc_json_structure(self, data: dict, limit: int) -> List[Dict]:
+        """BBC JSON 구조에서 기사 정보 파싱"""
+        articles = []
+        
+        try:
+            # Next.js 페이지 데이터 구조 탐색
+            if 'props' in data and 'pageProps' in data['props']:
+                page_data = data['props']['pageProps']
+                
+                # 페이지 콘텐츠에서 기사 찾기
+                if 'data' in page_data and 'content' in page_data['data']:
+                    content = page_data['data']['content']
+                    
+                    for section in content:
+                        if isinstance(section, dict) and 'content' in section:
+                            section_content = section['content']
+                            
+                            if isinstance(section_content, list):
+                                for item in section_content[:limit]:
+                                    if isinstance(item, dict):
+                                        article = self._parse_bbc_json_item(item)
+                                        if article:
+                                            articles.append(article)
+                                            
+        except Exception as e:
+            logger.debug(f"BBC JSON 구조 파싱 실패: {e}")
+        
+        return articles
+    
+    def _parse_bbc_json_item(self, item: dict) -> Dict:
+        """BBC JSON 아이템에서 기사 정보 추출"""
+        try:
+            title = item.get('title', '')
+            url = item.get('href', item.get('url', ''))
+            description = item.get('description', item.get('summary', ''))
+            
+            if title and url and len(title) > 10:
+                # URL 정규화
+                if url.startswith('/'):
+                    url = 'https://www.bbc.com' + url
+                elif not url.startswith('http'):
+                    url = 'https://www.bbc.com/' + url
+                
+                return {
+                    'title': title,
+                    'url': url,
+                    'summary': description[:300] if description else title[:200],
+                    'published_date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
+                    'source': 'BBC News',
+                    'category': 'news',
+                    'scraped_at': datetime.now().isoformat(),
+                    'relevance_score': 1,
+                    'image_url': item.get('image', {}).get('src', '') if isinstance(item.get('image'), dict) else ''
+                }
+                
+        except Exception as e:
+            logger.debug(f"BBC JSON 아이템 파싱 실패: {e}")
+        
+        return None
+    
+    def _extract_bbc_summary(self, element, title: str) -> str:
+        """BBC 기사에서 요약 추출"""
+        summary = ''
+        
+        try:
+            if hasattr(element, 'find_all'):
+                # BBC 요약 패턴들
+                summary_selectors = [
+                    'p',
+                    '.media__summary',
+                    '.promo-text',
+                    '.excerpt', 
+                    '.summary',
+                    '.description'
+                ]
+                
+                for selector in summary_selectors:
+                    elements = element.find_all(selector)
+                    
+                    for elem in elements:
+                        text = elem.get_text(strip=True)
+                        
+                        # 유효한 요약인지 확인
+                        if (len(text) > 30 and len(text) < 500 and
+                            text != title and
+                            not text.startswith('BBC') and
+                            not text.startswith('Published') and
+                            not text.lower().startswith('click here') and
+                            not text.lower().startswith('read more') and
+                            'bbc.com' not in text.lower()):
+                            
+                            summary = text
+                            break
+                    
+                    if summary:
+                        break
+                        
+        except Exception as e:
+            logger.debug(f"BBC 요약 추출 실패: {e}")
+        
+        return summary
+    
+    def _extract_bbc_date_improved(self, element, url: str) -> str:
+        """BBC 기사에서 날짜 추출 - 개선된 버전"""
+        try:
+            # 1. 요소에서 날짜 찾기
+            if hasattr(element, 'get_text'):
+                text = element.get_text()
+                
+                # BBC 날짜 패턴들
+                date_patterns = [
+                    r'(\d{1,2}\s+\w+\s+\d{4})',  # 17 July 2025
+                    r'(\w+\s+\d{1,2},?\s*\d{4})',  # July 17, 2025
+                    r'(\d{1,2}/\d{1,2}/\d{4})',  # 17/07/2025
+                    r'(\d{4}-\d{1,2}-\d{1,2})',  # 2025-07-17
+                    r'(\d{1,2}\s+hours?\s+ago)',  # 5 hours ago
+                    r'(\d{1,2}\s+days?\s+ago)'    # 2 days ago
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        try:
+                            date_str = match.group(0)
+                            
+                            if 'hours ago' in date_str.lower():
+                                hours = int(re.search(r'\d+', date_str).group())
+                                date_obj = datetime.now() - timedelta(hours=hours)
+                                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                            elif 'days ago' in date_str.lower():
+                                days = int(re.search(r'\d+', date_str).group())
+                                date_obj = datetime.now() - timedelta(days=days)
+                                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                            else:
+                                # 일반 날짜 형식들
+                                for fmt in ['%d %B %Y', '%B %d, %Y', '%d %b %Y', '%b %d, %Y', '%d/%m/%Y', '%Y-%m-%d']:
+                                    try:
+                                        date_obj = datetime.strptime(date_str, fmt)
+                                        return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                                    except:
+                                        continue
+                        except:
+                            continue
+            
+            # 2. URL에서 날짜 추출 (BBC URL 패턴)
+            # BBC URL 형태: https://www.bbc.com/news/articles/c1234567890
+            # 또는 숫자 기반 ID에서 날짜 추출 시도
+            url_patterns = [
+                r'/(\d{4})/(\d{1,2})/(\d{1,2})/',  # /2025/07/17/
+                r'-(\d{4})-(\d{1,2})-(\d{1,2})-',  # -2025-07-17-
+            ]
+            
+            for pattern in url_patterns:
+                match = re.search(pattern, url)
+                if match:
+                    try:
+                        year, month, day = match.groups()[:3]
+                        date_obj = datetime(int(year), int(month), int(day))
+                        return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                    except:
+                        continue
+                        
+        except Exception as e:
+            logger.debug(f"BBC 날짜 추출 실패: {e}")
+        
+        return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    
+    def _extract_bbc_category_from_url(self, url: str) -> str:
+        """BBC URL에서 카테고리 추출"""
+        try:
+            if '/sport/' in url:
+                return 'sports'
+            elif '/business/' in url:
+                return 'business'
+            elif '/innovation/' in url:
+                return 'technology'
+            elif '/culture/' in url:
+                return 'entertainment'
+            elif '/health/' in url:
+                return 'health'
+            elif '/science-environment/' in url:
+                return 'science'
+            elif '/politics/' in url:
+                return 'politics'
+            elif '/world/' in url:
+                return 'world'
+            elif '/uk/' in url:
+                return 'news'
+            elif '/news/' in url:
+                return 'news'
+            else:
+                return 'news'
+        except:
+            return 'news' 
+
+    def _extract_bbc_sport_json(self, html_content: str, limit: int) -> List[Dict]:
+        """BBC Sport 페이지의 JSON 구조에서 기사 추출"""
+        articles = []
+        
+        try:
+            import json
+            import re
+            
+            print(f"=== BBC Sport JSON 파싱 시작 - HTML 길이: {len(html_content)} ===")
+            
+            # BBC Sport 페이지에서 실제 스포츠 기사 링크들을 찾는 패턴들
+            sport_patterns = [
+                # 실제 스포츠 기사 URL 패턴들
+                r'href="(/sport/[^"]*articles/[^"]*)"[^>]*>([^<]{20,120})<',
+                r'<a[^>]*href="(/sport/[^"]*)"[^>]*>([^<]{20,120})</a>',
+                r'"url":\s*"(/sport/[^"]*articles/[^"]*)"[^}]*"title":\s*"([^"]{20,120})"',
+                r'"title":\s*"([^"]{20,120})"[^}]*"url":\s*"(/sport/[^"]*articles/[^"]*)"',
+                # 일반적인 뉴스 링크 패턴 (스포츠 관련)
+                r'<h[1-4][^>]*><a[^>]*href="(/sport/[^"]*)"[^>]*>([^<]{20,120})</a></h[1-4]>',
+            ]
+            
+            found_titles = set()
+            found_urls = set()
+            
+            # 각 패턴으로 기사 추출
+            for i, pattern in enumerate(sport_patterns):
+                print(f"=== BBC Sport 패턴 {i+1} 시도 ===")
+                matches = re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                print(f"=== BBC Sport 패턴 {i+1} 매칭 결과: {len(matches)}개 ===")
+                
+                for match in matches:
+                    try:
+                        # 패턴에 따라 순서가 다를 수 있음
+                        if len(match) == 2:
+                            if match[0].startswith('/'):
+                                url_part, title = match
+                            else:
+                                title, url_part = match
+                        else:
+                            continue
+                        
+                        # URL 정규화
+                        if url_part.startswith('/'):
+                            url = 'https://www.bbc.com' + url_part
+                        else:
+                            url = url_part
+                        
+                        # 기본 검증
+                        if not title or len(title.strip()) < 20:
+                            continue
+                            
+                        title = title.strip()
+                        
+                        # 중복 확인
+                        if url in found_urls or title.lower() in found_titles:
+                            continue
+                            
+                        # 무의미한 제목들 필터링
+                        if any(skip in title.lower() for skip in [
+                            'more', 'view all', 'see all', 'latest', 'follow',
+                            'subscribe', 'newsletter', 'homepage', 'menu'
+                        ]):
+                            continue
+                        
+                        # 실제 스포츠 관련 키워드 확인
+                        sport_keywords = [
+                            'football', 'soccer', 'premier league', 'champions league',
+                            'cricket', 'rugby', 'tennis', 'golf', 'formula', 'boxing',
+                            'olympics', 'world cup', 'uefa', 'fifa', 'player', 'team',
+                            'match', 'goal', 'win', 'lose', 'defeat', 'victory'
+                        ]
+                        
+                        has_sport_keyword = any(keyword in title.lower() for keyword in sport_keywords)
+                        if not has_sport_keyword:
+                            continue
+                            
+                        found_urls.add(url)
+                        found_titles.add(title.lower())
+                        
+                        article = {
+                            'title': title,
+                            'url': url,
+                            'summary': f"BBC Sport: {title[:150]}",
+                            'published_date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
+                            'source': 'BBC News',
+                            'category': 'sports',
+                            'scraped_at': datetime.now().isoformat(),
+                            'relevance_score': 1,
+                            'image_url': ''
+                        }
+                        
+                        articles.append(article)
+                        print(f"=== BBC Sport 기사 추가: {title[:50]}... ===")
+                        
+                        if len(articles) >= limit:
+                            break
+                            
+                    except Exception as e:
+                        logger.debug(f"BBC Sport 기사 처리 실패: {e}")
+                        continue
+                
+                if len(articles) >= limit:
+                    break
+            
+            # 충분한 기사를 찾지 못했을 경우 HTML 파싱 시도
+            if len(articles) < limit:
+                logger.info(f"BBC Sport JSON에서 {len(articles)}개만 찾음, HTML 파싱 시도")
+                html_articles = self._extract_bbc_sport_fallback(html_content, limit - len(articles), found_titles, found_urls)
+                articles.extend(html_articles)
+                
+        except Exception as e:
+            logger.error(f"BBC Sport JSON 파싱 실패: {e}")
+        
+        return articles
+    
+    def _extract_bbc_sport_fallback(self, html_content: str, limit: int, found_titles: set, found_urls: set) -> List[Dict]:
+        """BBC Sport 페이지에서 폴백 방식으로 추가 기사 추출"""
+        articles = []
+        
+        try:
+            import re
+            
+            # 더 광범위한 스포츠 기사 패턴들 (하지만 여전히 실제 기사만)
+            fallback_patterns = [
+                # 실제 기사 URL 패턴들
+                r'"text":\s*"([^"]{20,120}[a-z]{3,}[^"]*)".*?"url":\s*"([^"]*sport/[^"]*articles/[^"]*)"',
+                r'"label":\s*"([^"]{20,120}[a-z]{3,}[^"]*)".*?"href":\s*"([^"]*sport/[^"]*articles/[^"]*)"',
+                r'"name":\s*"([^"]{20,120}[a-z]{3,}[^"]*)".*?"url":\s*"([^"]*sport/[^"]*articles/[^"]*)"',
+                # 더 구체적인 스포츠 기사들
+                r'<h[2-4][^>]*>([^<]{20,120})</h[2-4]>.*?href="([^"]*sport/[^"]*articles/[^"]*)"',
+                r'"contentTitle":\s*"([^"]{20,120})".*?"url":\s*"([^"]*sport/[^"]*)".*?"type":\s*"article"'
+            ]
+            
+            for pattern in fallback_patterns:
+                matches = re.findall(pattern, html_content, re.DOTALL)
+                
+                for title, url in matches:
+                    try:
+                        # 기본 검증
+                        if not title or len(title) < 20 or not url:
+                            continue
+                            
+                        # URL 정규화
+                        if url.startswith('/'):
+                            url = 'https://www.bbc.com' + url
+                        elif not url.startswith('http'):
+                            continue
+                            
+                        # 중복 제거
+                        title_lower = title.lower().strip()
+                        if title_lower in found_titles or url in found_urls:
+                            continue
+                            
+                        # 섹션 제목들 필터링
+                        if any(section in title_lower for section in [
+                            'more', 'explore', 'latest', 'podcast', 'sign up', 'follow',
+                            'newsletter', 'subscribe', 'privacy', 'terms', 'contact'
+                        ]):
+                            continue
+                            
+                        # 스포츠 관련인지 확인 (더 엄격하게)
+                        sport_indicators = [
+                            'football', 'soccer', 'premier league', 'champions league',
+                            'cricket', 'rugby', 'tennis', 'golf', 'formula', 'boxing',
+                            'olympics', 'world cup', 'uefa', 'fifa', 'player', 'team',
+                            'match', 'goal', 'win', 'lose', 'defeat', 'victory'
+                        ]
+                        
+                        has_sport_indicator = any(indicator in title_lower for indicator in sport_indicators)
+                        if not has_sport_indicator:
+                            continue
+                            
+                        found_titles.add(title_lower)
+                        found_urls.add(url)
+                        
+                        article = {
+                            'title': title,
+                            'url': url,
+                            'summary': f"BBC Sport coverage: {title[:150]}",
+                            'published_date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
+                            'source': 'BBC Sport',
+                            'category': 'sports',
+                            'scraped_at': datetime.now().isoformat(),
+                            'relevance_score': 1,
+                            'image_url': ''
+                        }
+                        
+                        articles.append(article)
+                        logger.info(f"BBC Sport 폴백 기사 추출: {title}")
+                        
+                        if len(articles) >= limit:
+                            break
+                            
+                    except Exception as e:
+                        logger.debug(f"BBC Sport 폴백 기사 처리 실패: {e}")
+                        continue
+                        
+                if len(articles) >= limit:
+                    break
+                    
+        except Exception as e:
+            logger.debug(f"BBC Sport 폴백 파싱 실패: {e}")
+        
+        return articles
+    
+    def _extract_bbc_sport_summary(self, html_content: str, title: str, url: str) -> str:
+        """BBC Sport 기사의 요약 추출"""
+        try:
+            import re
+            
+            # JSON에서 해당 기사의 요약 찾기
+            title_escaped = re.escape(title)
+            summary_patterns = [
+                rf'{title_escaped}.*?"description":\s*"([^"]+)"',
+                rf'{title_escaped}.*?"summary":\s*"([^"]+)"',
+                rf'"url":\s*"{re.escape(url)}".*?"description":\s*"([^"]+)"'
+            ]
+            
+            for pattern in summary_patterns:
+                match = re.search(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                if match:
+                    summary = match.group(1).strip()
+                    if summary and len(summary) > 10:
+                        return summary
+                        
+        except Exception as e:
+            logger.debug(f"BBC Sport 요약 추출 실패: {e}")
+        
+        return f"BBC Sport latest update on {title[:100]}"
+    
+    def _extract_bbc_sport_image(self, html_content: str, url: str) -> str:
+        """BBC Sport 기사의 이미지 추출"""
+        try:
+            import re
+            
+            # JSON에서 해당 기사의 이미지 찾기
+            url_escaped = re.escape(url)
+            image_patterns = [
+                rf'"url":\s*"{url_escaped}".*?"src":\s*"([^"]*ichef\.bbci\.co\.uk[^"]*)"',
+                rf'"url":\s*"{url_escaped}".*?"image":\s*{{[^}}]*"src":\s*"([^"]*)"',
+                rf'"src":\s*"([^"]*ichef\.bbci\.co\.uk[^"]*)"'
+            ]
+            
+            for pattern in image_patterns:
+                match = re.search(pattern, html_content, re.DOTALL)
+                if match:
+                    image_url = match.group(1)
+                    if self._is_valid_bbc_image(image_url):
+                        if not image_url.startswith('http'):
+                            if image_url.startswith('//'):
+                                image_url = 'https:' + image_url
+                            elif image_url.startswith('/'):
+                                image_url = 'https://www.bbc.com' + image_url
+                        return image_url
+                        
+        except Exception as e:
+            logger.debug(f"BBC Sport 이미지 추출 실패: {e}")
+        
+        return '' 
