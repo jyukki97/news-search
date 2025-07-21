@@ -8,8 +8,7 @@ services:
     startCommand: npm start
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        # 실제 배포된 백엔드 URL로 업데이트하세요
-        # 예: https://news-search-backend-flyf.onrender.com
+        # 실제 배포된 백엔드 URL
         value: https://news-search-backend-flyf.onrender.com
       - key: NODE_ENV
         value: production

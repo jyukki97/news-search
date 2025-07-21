@@ -13,8 +13,7 @@ services:
       - key: MAX_WORKERS
         value: 1
       - key: CORS_ORIGINS
-        # 실제 배포된 프론트엔드 URL로 업데이트하세요
-        # 예: https://news-search-frontend-xyz.onrender.com
-        value: https://news-search-frontend-xyz.onrender.com,http://localhost:3000
+        # 실제 배포된 프론트엔드 URL
+        value: https://news-search-frontend.onrender.com,http://localhost:3000
     autoDeploy: true
     branch: main 
