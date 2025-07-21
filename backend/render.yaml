@@ -1,15 +1,15 @@
 services:
   - type: web
     name: news-search-backend
-    env: python
+    env: docker
     region: singapore
     plan: free
-    buildCommand: pip install --no-cache-dir -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /api/news/categories
     envVars:
       - key: PYTHONPATH
-        value: /opt/render/project/src
+        value: /app
       - key: MAX_WORKERS
         value: 1
       - key: CORS_ORIGINS

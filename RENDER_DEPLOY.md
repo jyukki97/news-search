@@ -19,17 +19,18 @@
 ### 1.2 백엔드 서비스 설정
 ```yaml
 Name: news-search-backend
-Environment: Python 3
+Environment: Docker
 Region: Singapore (또는 원하는 지역)
 Branch: main
 Root Directory: backend
-Build Command: pip install --no-cache-dir -r requirements.txt
-Start Command: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+Dockerfile Path: ./Dockerfile
 ```
+
+**참고**: 백엔드는 기존 Dockerfile을 사용하여 Docker 방식으로 배포됩니다. 별도 빌드 명령어 설정이 불필요합니다.
 
 ### 1.3 환경변수 설정
 ```bash
-PYTHONPATH=/opt/render/project/src
+PYTHONPATH=/app
 MAX_WORKERS=1
 CORS_ORIGINS=https://news-search-frontend.onrender.com,http://localhost:3000
 ```
