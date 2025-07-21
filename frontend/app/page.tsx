@@ -99,6 +99,9 @@ export default function Home() {
 
   // 카테고리 변경 핸들러
   const handleCategoryChange = (categoryId: string) => {
+    // 카테고리 상태 즉시 업데이트
+    setSelectedCategory(categoryId)
+    
     // 스트리밍 상태 완전 초기화
     setStreamingBySource({})
     setStreamingActiveSources([])
@@ -250,6 +253,13 @@ export default function Home() {
     })
     
     setSelectedSites(newSelection)
+    
+    // 트렌딩 모드일 때 즉시 다시 로드
+    if (viewMode === 'trending') {
+      setTimeout(() => {
+        loadTrendingNews(selectedCategory)
+      }, 100) // 상태 업데이트 후 실행
+    }
   }
 
   // 개별 사이트 토글
@@ -258,6 +268,13 @@ export default function Home() {
       ...prev,
       [siteId]: !prev[siteId]
     }))
+    
+    // 트렌딩 모드일 때 즉시 다시 로드
+    if (viewMode === 'trending') {
+      setTimeout(() => {
+        loadTrendingNews(selectedCategory)
+      }, 100) // 상태 업데이트 후 실행
+    }
   }
 
   const handleSearch = async (searchQuery: string, page: number = 1) => {
@@ -979,8 +996,9 @@ export default function Home() {
             ))}
           </div>
 
-          {/* 스트리밍 모드 토글 */}
-          <div className="flex items-center justify-center mb-4">
+          {/* 설정 옵션들 */}
+          <div className="flex flex-col space-y-4 md:flex-row md:space-y-0 md:space-x-6 items-center justify-center">
+            {/* 스트리밍 모드 토글 */}
             <label className="flex items-center space-x-2 text-sm">
               <input
                 type="checkbox"
@@ -1010,10 +1028,154 @@ export default function Home() {
                 className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
               />
               <span className="text-gray-700">
-                ⚡ 스트리밍 모드 (실시간 업데이트)
+                ⚡ 스트리밍 모드
               </span>
             </label>
+
+            {/* 사이트 필터 토글 버튼 */}
+            <button
+              onClick={() => setShowSiteFilter(!showSiteFilter)}
+              className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
+            >
+              📰 사이트 선택 ({selectedSitesCount}/{newsSites.length})
+            </button>
           </div>
+
+          {/* 트렌딩용 사이트 필터 */}
+          {showSiteFilter && (
+            <div className="max-w-4xl mx-auto bg-gray-50 rounded-lg p-6 border border-gray-200">
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="text-lg font-semibold text-gray-800">📰 뉴스 사이트 선택</h4>
+                <button
+                  onClick={() => setShowSiteFilter(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  ✕
+                </button>
+              </div>
+              
+              {/* 전체 선택/해제 버튼 */}
+              <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-300">
+                <button
+                  onClick={toggleAllSites}
+                  className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                >
+                  {selectedSitesCount === newsSites.length ? '전체 해제' : '전체 선택'}
+                </button>
+                <span className="text-sm text-gray-600">
+                  {selectedSitesCount}개 사이트 선택됨
+                </span>
+              </div>
+              
+              {/* 사이트별 체크박스 그리드 */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {newsSites.map((site) => (
+                  <label
+                    key={site.id}
+                    className="flex items-center space-x-3 p-3 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedSites[site.id] || false}
+                      onChange={() => toggleSite(site.id)}
+                      className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+                    />
+                    <div className="flex items-center space-x-2">
+                      <span className="text-lg">{site.icon}</span>
+                      <div>
+                        <div className="text-sm font-medium text-gray-800">{site.name}</div>
+                        {site.isSlow && (
+                          <div className="text-xs text-orange-600 bg-orange-100 px-1.5 py-0.5 rounded">
+                            느림
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+
+              {/* 지역별 빠른 선택 */}
+              <div className="mt-6 pt-4 border-t border-gray-300">
+                <h5 className="text-sm font-medium text-gray-700 mb-3">🌍 지역별 빠른 선택</h5>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => {
+                      const asianSites = ['asahi', 'yomiuri', 'vnexpress', 'bangkokpost', 'scmp']
+                      const newSelection = { ...selectedSites }
+                      asianSites.forEach(site => newSelection[site] = true)
+                      Object.keys(newSelection).forEach(site => {
+                        if (!asianSites.includes(site)) newSelection[site] = false
+                      })
+                      setSelectedSites(newSelection)
+                      setTimeout(() => loadTrendingNews(selectedCategory), 100)
+                    }}
+                    className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-sm hover:bg-blue-200 transition-colors"
+                  >
+                    🌏 아시아
+                  </button>
+                  <button
+                    onClick={() => {
+                      const europeanSites = ['bbc', 'thesun', 'dailymail']
+                      const newSelection = { ...selectedSites }
+                      europeanSites.forEach(site => newSelection[site] = true)
+                      Object.keys(newSelection).forEach(site => {
+                        if (!europeanSites.includes(site)) newSelection[site] = false
+                      })
+                      setSelectedSites(newSelection)
+                      setTimeout(() => loadTrendingNews(selectedCategory), 100)
+                    }}
+                    className="px-3 py-1 bg-green-100 text-green-700 rounded text-sm hover:bg-green-200 transition-colors"
+                  >
+                    🇪🇺 유럽
+                  </button>
+                  <button
+                    onClick={() => {
+                      const americanSites = ['nypost']
+                      const newSelection = { ...selectedSites }
+                      americanSites.forEach(site => newSelection[site] = true)
+                      Object.keys(newSelection).forEach(site => {
+                        if (!americanSites.includes(site)) newSelection[site] = false
+                      })
+                      setSelectedSites(newSelection)
+                      setTimeout(() => loadTrendingNews(selectedCategory), 100)
+                    }}
+                    className="px-3 py-1 bg-red-100 text-red-700 rounded text-sm hover:bg-red-200 transition-colors"
+                  >
+                    🇺🇸 북미
+                  </button>
+                  <button
+                    onClick={() => {
+                      const englishSites = ['bbc', 'thesun', 'nypost', 'dailymail', 'scmp', 'bangkokpost']
+                      const newSelection = { ...selectedSites }
+                      englishSites.forEach(site => newSelection[site] = true)
+                      Object.keys(newSelection).forEach(site => {
+                        if (!englishSites.includes(site)) newSelection[site] = false
+                      })
+                      setSelectedSites(newSelection)
+                      setTimeout(() => loadTrendingNews(selectedCategory), 100)
+                    }}
+                    className="px-3 py-1 bg-purple-100 text-purple-700 rounded text-sm hover:bg-purple-200 transition-colors"
+                  >
+                    🇬🇧 영어
+                  </button>
+                </div>
+              </div>
+
+              {/* 적용 버튼 */}
+              <div className="mt-6 text-center">
+                <button
+                  onClick={() => {
+                    setShowSiteFilter(false)
+                    loadTrendingNews(selectedCategory)
+                  }}
+                  className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-medium"
+                >
+                  ✅ 적용하고 새로고침
+                </button>
+              </div>
+            </div>
+          )}
 
                   {/* 트렌딩 뉴스 내용 */}
         {useStreamMode ? (

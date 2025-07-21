@@ -666,39 +666,304 @@ class HybridDailyMailScraper:
             return 'news'
     
     def get_latest_news(self, category: str = 'news', limit: int = 10) -> List[Dict]:
-        """카테고리별 최신 뉴스 가져오기"""
+        """카테고리별 최신 뉴스 가져오기 - 실제 웹사이트 구조에 맞게 개선"""
         try:
-            # 홈페이지에서 최신 기사들을 가져옴
-            articles = self._get_homepage_articles(limit)
+            logger.info(f"Daily Mail 카테고리별 뉴스 요청: {category}")
             
-            # 결과가 적으면 검색으로 보완
-            if not articles or len(articles) < limit // 2:
-                logger.info("Daily Mail 최신 뉴스 결과 부족, 검색으로 보완")
-                
-                # 카테고리별 키워드 매핑
-                category_keywords = {
-                    'news': 'breaking news',
-                    'business': 'business economy',
-                    'sports': 'sports football',
-                    'technology': 'technology tech',
-                    'health': 'health',
-                    'entertainment': 'celebrity entertainment'
-                }
-                
-                keyword = category_keywords.get(category, 'breaking news')
-                search_articles = self.search_news(keyword, limit)
-                
-                # 기존 결과와 검색 결과를 합치되 중복 제거
-                if search_articles:
-                    existing_urls = {article.get('url') for article in articles} if articles else set()
-                    for article in search_articles:
-                        if article.get('url') not in existing_urls:
-                            articles.append(article)
-                            if len(articles) >= limit:
-                                break
+            # 실제 Daily Mail 카테고리 URL들
+            category_urls = {
+                'all': 'https://www.dailymail.co.uk/home/index.html',
+                'news': 'https://www.dailymail.co.uk/news/index.html',
+                'business': 'https://www.dailymail.co.uk/money/index.html',
+                'sports': 'https://www.dailymail.co.uk/sport/index.html',
+                'sport': 'https://www.dailymail.co.uk/sport/index.html',
+                'technology': 'https://www.dailymail.co.uk/sciencetech/index.html',
+                'tech': 'https://www.dailymail.co.uk/sciencetech/index.html',
+                'sciencetech': 'https://www.dailymail.co.uk/sciencetech/index.html',
+                'health': 'https://www.dailymail.co.uk/health/index.html',
+                'entertainment': 'https://www.dailymail.co.uk/tvshowbiz/index.html',
+                'travel': 'https://www.dailymail.co.uk/travel/index.html'
+            }
             
-            return articles[:limit]
+            url = category_urls.get(category, category_urls['news'])
+            
+            logger.info(f"Daily Mail 카테고리 페이지 접근: {url}")
+            
+            # 실제 카테고리 페이지에서 기사 추출
+            response = requests.get(url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+            
+            articles = self._extract_dailymail_category_articles(response.text, limit, category)
+            
+            if articles:
+                logger.info(f"Daily Mail {category} 카테고리에서 {len(articles)}개 기사 추출")
+                return articles
+            else:
+                # 폴백: 홈페이지에서 추출
+                logger.info("카테고리 추출 실패, 홈페이지에서 시도")
+                return self._get_homepage_articles(limit)
             
         except Exception as e:
             logger.error(f"Daily Mail 최신 뉴스 실패: {e}")
-            return [] 
+            # 최종 폴백: 검색 사용
+            logger.info("모든 방법 실패, 검색으로 폴백")
+            category_keywords = {
+                'news': 'breaking news',
+                'business': 'business economy',
+                'sports': 'sports football',
+                'sport': 'sports football',
+                'technology': 'technology science tech',
+                'tech': 'technology science',
+                'sciencetech': 'science technology',
+                'health': 'health medical',
+                'entertainment': 'celebrity entertainment'
+            }
+            keyword = category_keywords.get(category, 'breaking news')
+            return self.search_news(keyword, limit)
+    
+    def _extract_dailymail_category_articles(self, html_content: str, limit: int, category: str) -> List[Dict]:
+        """Daily Mail 카테고리 페이지에서 기사 추출 - 실제 구조 분석 기반"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Daily Mail 실제 기사 선택자들
+            article_selectors = [
+                # 메인 기사 링크들 (Daily Mail 특화)
+                'h2 a[href*="/article-"]',
+                'h3 a[href*="/article-"]', 
+                'h4 a[href*="/article-"]',
+                'a[href*="/article-"][class*="link"]',
+                # 카테고리별 기사들
+                '.article-text a[href*="/article-"]',
+                '.link-box a[href*="/article-"]',
+                '.article-wrap a[href*="/article-"]',
+                # 일반적인 기사 링크
+                'a[href*="/article-"]'
+            ]
+            
+            found_urls = set()
+            
+            for selector in article_selectors:
+                try:
+                    links = soup.select(selector)
+                    logger.debug(f"Daily Mail {selector}: {len(links)}개 링크 발견")
+                    
+                    for link in links:
+                        try:
+                            title = link.get_text(strip=True)
+                            url = link.get('href', '')
+                            
+                            # 기본 검증
+                            if not title or len(title) < 15:
+                                continue
+                                
+                            if not url or '/article-' not in url:
+                                continue
+                                
+                            # URL 정규화
+                            if url.startswith('/'):
+                                url = self.base_url + url
+                            elif not url.startswith('http'):
+                                url = self.base_url + '/' + url
+                            
+                            # Daily Mail URL 확인
+                            if 'dailymail.co.uk' not in url:
+                                continue
+                                
+                            # 중복 확인
+                            if url in found_urls:
+                                continue
+                            found_urls.add(url)
+                            
+                            # 불필요한 링크 필터링
+                            if any(skip in url.lower() for skip in [
+                                '/search', '/login', '/register', '/subscribe', 
+                                '/contact', '/about', '/terms', '/privacy',
+                                '/rss', '/mobile'
+                            ]):
+                                continue
+                                
+                            # 불필요한 제목들 필터링
+                            if any(skip in title.lower() for skip in [
+                                'follow us', 'subscribe', 'newsletter', 'login',
+                                'register', 'contact us', 'privacy policy',
+                                'terms of service', 'cookie policy', 'sitemap'
+                            ]):
+                                continue
+                            
+                            # 링크 주변에서 정보 추출
+                            parent = link.parent
+                            context = parent.parent if parent and parent.parent else parent if parent else link
+                            
+                            # 요약 추출
+                            summary = self._extract_dailymail_summary(context, title)
+                            
+                            # 이미지 추출 (개선된 버전 사용)
+                            image_url = self._extract_dailymail_image_improved(link, url)
+                            
+                            # 날짜 추출
+                            published_date = self._extract_dailymail_date_improved(context, url)
+                            
+                            # 카테고리 추출
+                            article_category = self._extract_category_from_url(url) or category
+                            
+                            article = {
+                                'title': title,
+                                'url': url,
+                                'summary': summary[:300] if summary else title[:200],
+                                'published_date': published_date,
+                                'source': 'Daily Mail',
+                                'category': article_category,
+                                'scraped_at': datetime.now().isoformat(),
+                                'relevance_score': 1,
+                                'image_url': image_url
+                            }
+                            
+                            articles.append(article)
+                            
+                            if len(articles) >= limit:
+                                break
+                                
+                        except Exception as e:
+                            logger.debug(f"Daily Mail 개별 기사 처리 실패: {e}")
+                            continue
+                    
+                    if len(articles) >= limit:
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"Daily Mail selector {selector} 처리 실패: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Daily Mail 카테고리 HTML 파싱 실패: {e}")
+        
+        return articles[:limit]
+    
+    def _extract_dailymail_summary(self, element, title: str) -> str:
+        """Daily Mail 기사에서 요약 추출"""
+        summary = ''
+        
+        try:
+            if hasattr(element, 'find_all'):
+                # Daily Mail 요약 패턴들
+                summary_selectors = [
+                    'p',
+                    '.article-text',
+                    '.summary', 
+                    '.excerpt',
+                    '.description',
+                    '.intro'
+                ]
+                
+                for selector in summary_selectors:
+                    elements = element.find_all(selector)
+                    
+                    for elem in elements:
+                        text = elem.get_text(strip=True)
+                        
+                        # 유효한 요약인지 확인
+                        if (len(text) > 30 and len(text) < 500 and
+                            text != title and
+                            not text.startswith('Daily Mail') and
+                            not text.startswith('MailOnline') and
+                            not text.startswith('Published:') and
+                            not text.lower().startswith('click here') and
+                            not text.lower().startswith('read more') and
+                            'dailymail.co.uk' not in text.lower()):
+                            
+                            summary = text
+                            break
+                    
+                    if summary:
+                        break
+                        
+        except Exception as e:
+            logger.debug(f"Daily Mail 요약 추출 실패: {e}")
+        
+        return summary
+    
+    def _extract_dailymail_date_improved(self, element, url: str) -> str:
+        """Daily Mail 기사에서 날짜 추출 - 개선된 버전"""
+        try:
+            # 1. 요소에서 날짜 찾기
+            if hasattr(element, 'get_text'):
+                text = element.get_text()
+                
+                # Daily Mail 날짜 패턴들
+                date_patterns = [
+                    r'Published:\s*(\d{1,2}:\d{2}),?\s*(\d{1,2})\s+(\w+)\s+(\d{4})',  # Published: 12:34, 17 July 2025
+                    r'(\d{1,2}:\d{2}),?\s*(\d{1,2})\s+(\w+)\s+(\d{4})',  # 12:34, 17 July 2025
+                    r'(\d{1,2})\s+(\w+)\s+(\d{4})',  # 17 July 2025
+                    r'(\d{1,2})/(\d{1,2})/(\d{4})',  # 17/07/2025
+                    r'(\d{4})-(\d{1,2})-(\d{1,2})'   # 2025-07-17
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        try:
+                            groups = match.groups()
+                            
+                            if 'Published:' in pattern or len(groups) >= 4:
+                                # Published: 12:34, 17 July 2025 형태
+                                if len(groups) >= 4:
+                                    day = groups[1]
+                                    month = groups[2]
+                                    year = groups[3]
+                                else:
+                                    day = groups[0]
+                                    month = groups[1] 
+                                    year = groups[2]
+                                
+                                try:
+                                    # 월 이름을 숫자로 변환
+                                    month_names = {
+                                        'january': 1, 'february': 2, 'march': 3, 'april': 4,
+                                        'may': 5, 'june': 6, 'july': 7, 'august': 8,
+                                        'september': 9, 'october': 10, 'november': 11, 'december': 12,
+                                        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+                                        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+                                    }
+                                    month_num = month_names.get(month.lower(), month)
+                                    if isinstance(month_num, str):
+                                        month_num = int(month_num)
+                                    
+                                    date_obj = datetime(int(year), month_num, int(day))
+                                    return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                                except:
+                                    continue
+                            else:
+                                # 숫자 형태의 날짜들
+                                if '/' in pattern:
+                                    date_obj = datetime(int(groups[2]), int(groups[1]), int(groups[0]))
+                                elif '-' in pattern:
+                                    date_obj = datetime(int(groups[0]), int(groups[1]), int(groups[2]))
+                                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                        except:
+                            continue
+            
+            # 2. URL에서 날짜 추출 (Daily Mail article-{id} 형태)
+            article_match = re.search(r'/article-(\d+)/', url)
+            if article_match:
+                article_id = article_match.group(1)
+                # article ID의 앞 8자리가 날짜일 가능성이 높음
+                if len(article_id) >= 8:
+                    try:
+                        date_part = article_id[:8]
+                        year = int(date_part[:4])
+                        month = int(date_part[4:6])
+                        day = int(date_part[6:8])
+                        
+                        if 2020 <= year <= 2030 and 1 <= month <= 12 and 1 <= day <= 31:
+                            date_obj = datetime(year, month, day)
+                            return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                    except:
+                        pass
+                        
+        except Exception as e:
+            logger.debug(f"Daily Mail 날짜 추출 실패: {e}")
+        
+        return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT') 

@@ -153,7 +153,7 @@ class YomiuriScraper:
                         published_date = self._extract_date(element, url)
                         
                         # 카테고리 추출
-                        category = self._extract_category_from_url(url)
+                        category = self._extract_category_from_content(title, summary, url)
                         
                         article = {
                             'title': title,
@@ -280,20 +280,58 @@ class YomiuriScraper:
         except:
             return 'news'
     
+    def _extract_category_from_content(self, title, summary, url):
+        """제목, 요약, URL을 종합하여 카테고리 추출"""
+        # 먼저 URL 기반 분류
+        url_category = self._extract_category_from_url(url)
+        if url_category != 'news':
+            return url_category
+        
+        # 제목과 요약에서 키워드 기반 분류
+        content = (title + ' ' + (summary or '')).lower()
+        
+        # 기술/AI 키워드 (전각/반각 모두 포함)
+        tech_keywords = ['ai', 'ａｉ', 'artificial intelligence', 'technology', 'tech', 'digital', 'cyber', 'computer', 'internet', 'software', 'data', 'algorithm', '인공지능', 'ＡＩ', 'ａｉ', '生成', 'デジタル', 'テクノロジー']
+        if any(keyword in content for keyword in tech_keywords):
+            return 'technology'
+        
+        # 스포츠 키워드
+        sport_keywords = ['football', 'soccer', 'basketball', 'tennis', 'sports', 'sport', 'game', 'match', 'player', 'team', 'uefa', 'fifa', 'olympics', 'サッカー', 'スポーツ', '축구', '스포츠']
+        if any(keyword in content for keyword in sport_keywords):
+            return 'sports'
+        
+        # 비즈니스 키워드
+        business_keywords = ['business', 'economy', 'economic', 'finance', 'financial', 'market', 'trade', 'company', 'corporate', 'stock', 'investment', '経済', 'ビジネス', '비즈니스', '경제']
+        if any(keyword in content for keyword in business_keywords):
+            return 'business'
+        
+        # 엔터테인먼트 키워드
+        entertainment_keywords = ['entertainment', 'celebrity', 'movie', 'film', 'music', 'actor', 'actress', 'singer', 'show', 'television', 'tv', '엔터테인먼트', '연예', '映画', '音楽']
+        if any(keyword in content for keyword in entertainment_keywords):
+            return 'entertainment'
+        
+        # 건강 키워드
+        health_keywords = ['health', 'medical', 'medicine', 'hospital', 'doctor', 'disease', 'virus', 'covid', 'pandemic', '건강', '의료', '病院', '医療']
+        if any(keyword in content for keyword in health_keywords):
+            return 'health'
+        
+        return 'news'
+    
     def get_latest_news(self, category: str = 'news', limit: int = 10) -> List[Dict]:
         """Yomiuri Shimbun 최신 뉴스 가져오기"""
         try:
-            # 카테고리별 URL 매핑 (영어 섹션 우선)
+            # 카테고리별 URL 매핑 (일본어 메인 사이트 사용)
             category_urls = {
-                'news': f"{self.english_url}/national",
-                'business': f"{self.english_url}/economy", 
-                'sports': f"{self.english_url}/sports",
-                'tech': f"{self.english_url}/sci-tech",
-                'world': f"{self.english_url}/world",
-                'japan': f"{self.english_url}",
-                'lifestyle': f"{self.english_url}/culture",
-                'opinion': f"{self.english_url}/editorial",
-                'all': self.english_url
+                'all': 'https://www.yomiuri.co.jp',  # 메인 홈페이지
+                'news': 'https://www.yomiuri.co.jp/national',
+                'business': 'https://www.yomiuri.co.jp/economy', 
+                'sports': 'https://www.yomiuri.co.jp/sports/',  # 실제 스포츠 섹션
+                'sport': 'https://www.yomiuri.co.jp/sports/',
+                'tech': 'https://www.yomiuri.co.jp/science/',  # 실제 과학 섹션
+                'technology': 'https://www.yomiuri.co.jp/science/',
+                'world': 'https://www.yomiuri.co.jp/world',
+                'culture': 'https://www.yomiuri.co.jp/culture/',  # 문화 섹션
+                'opinion': 'https://www.yomiuri.co.jp/editorial'
             }
             
             url = category_urls.get(category, category_urls['news'])

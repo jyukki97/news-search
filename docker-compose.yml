@@ -7,6 +7,9 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     environment:
       - PYTHONPATH=/app
       - MAX_WORKERS=2

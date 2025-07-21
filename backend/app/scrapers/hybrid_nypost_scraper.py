@@ -8,7 +8,7 @@ HTTP 우선 → 실패시 Selenium 자동 사용
 import requests
 from bs4 import BeautifulSoup
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from urllib.parse import quote
 import re
@@ -634,5 +634,295 @@ class HybridNYPostScraper:
             return 'news'
     
     def get_latest_news(self, category: str = 'news', limit: int = 10) -> List[Dict]:
-        """카테고리별 최신 뉴스 가져오기"""
-        return self._get_homepage_articles(limit) 
+        """NY Post의 실제 카테고리 섹션에서 뉴스 가져오기 - 실제 웹사이트 구조에 맞게 개선"""
+        try:
+            logger.info(f"NY Post 카테고리별 뉴스 요청: {category}")
+            
+            # 실제 NY Post 카테고리 섹션 URL들 (2025년 기준)
+            category_urls = {
+                'all': 'https://nypost.com',
+                'news': 'https://nypost.com/news/',
+                'sports': 'https://nypost.com/sports/',
+                'sport': 'https://nypost.com/sports/',
+                'business': 'https://nypost.com/business/',
+                'technology': 'https://nypost.com/tech/',
+                'tech': 'https://nypost.com/tech/',
+                'entertainment': 'https://nypost.com/entertainment/',
+                'science': 'https://nypost.com/tech/',  # 과학 기사들이 tech 섹션에 포함됨
+                'health': 'https://nypost.com/health/',
+                'metro': 'https://nypost.com/metro/',
+                'world': 'https://nypost.com/news/world-news/',
+                'opinion': 'https://nypost.com/opinion/'
+            }
+            
+            url = category_urls.get(category, category_urls['news'])
+            logger.info(f"NY Post 카테고리 페이지 접근: {url}")
+            
+            response = requests.get(url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+            
+            # 실제 웹사이트 구조에 맞게 기사 추출
+            articles = self._extract_nypost_category_articles(response.text, limit, category)
+            
+            if articles:
+                logger.info(f"NY Post {category} 카테고리에서 {len(articles)}개 기사 추출")
+                return articles
+            else:
+                # 폴백: 검색 사용
+                logger.info("카테고리 추출 실패, 검색으로 폴백")
+                fallback_keywords = {
+                    'sports': 'Yankees Mets Giants sports',
+                    'sport': 'Yankees Mets Giants sports',
+                    'technology': 'technology tech innovation',
+                    'tech': 'technology tech innovation',
+                    'science': 'science research study',
+                    'business': 'business economy market',
+                    'entertainment': 'entertainment celebrity Hollywood',
+                    'health': 'health medical',
+                    'metro': 'NYC metro city',
+                    'world': 'international world news',
+                    'news': 'breaking news'
+                }
+                keyword = fallback_keywords.get(category, 'breaking news')
+                return self.search_news(keyword, limit)
+            
+        except Exception as e:
+            logger.error(f"NY Post 최신 뉴스 실패: {e}")
+            # 최종 폴백: 홈페이지 사용
+            return self._get_homepage_articles(limit)
+    
+    def _extract_nypost_category_articles(self, html_content: str, limit: int, category: str) -> List[Dict]:
+        """NY Post 카테고리 페이지에서 기사 추출 - 실제 구조 분석 기반"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # NY Post 실제 기사 선택자들
+            article_selectors = [
+                # 메인 기사 링크들
+                'h2 a[href*="nypost.com"]',
+                'h3 a[href*="nypost.com"]',
+                'h4 a[href*="nypost.com"]',
+                # 기사 컨테이너들
+                'article a[href*="nypost.com"]',
+                '.story a[href*="nypost.com"]',
+                '.post a[href*="nypost.com"]',
+                '.entry-title a[href*="nypost.com"]',
+                '.story-headline a',
+                # 년도 기반 URL 패턴 (NY Post 특화)
+                'a[href*="/2025/"]',
+                'a[href*="/2024/"]',
+                # 일반적인 링크들
+                'a[href*="nypost.com"][href*="/"][href*="-"]'
+            ]
+            
+            found_urls = set()
+            
+            for selector in article_selectors:
+                try:
+                    links = soup.select(selector)
+                    logger.debug(f"NY Post {selector}: {len(links)}개 링크 발견")
+                    
+                    for link in links:
+                        try:
+                            title = link.get_text(strip=True)
+                            url = link.get('href', '')
+                            
+                            # 기본 검증
+                            if not title or len(title) < 15:
+                                continue
+                                
+                            if not url:
+                                continue
+                                
+                            # URL 정규화
+                            if url.startswith('/'):
+                                url = self.base_url + url
+                            elif not url.startswith('http'):
+                                url = self.base_url + '/' + url
+                            
+                            # NY Post URL 확인
+                            if 'nypost.com' not in url:
+                                continue
+                                
+                            # 중복 확인
+                            if url in found_urls:
+                                continue
+                            found_urls.add(url)
+                            
+                            # 불필요한 링크 필터링
+                            if any(skip in url.lower() for skip in [
+                                '/search', '/login', '/register', '/subscribe', 
+                                '/contact', '/about', '/terms', '/privacy',
+                                '/author/', '/tag/', '/feed/', '/rss'
+                            ]):
+                                continue
+                                
+                            # 불필요한 제목들 필터링
+                            if any(skip in title.lower() for skip in [
+                                'follow us', 'subscribe', 'newsletter', 'login',
+                                'register', 'contact us', 'privacy policy',
+                                'terms of service', 'cookie policy', 'sitemap',
+                                'read more', 'continue reading'
+                            ]):
+                                continue
+                            
+                            # 링크 주변에서 정보 추출
+                            parent = link.parent
+                            context = parent.parent if parent and parent.parent else parent if parent else link
+                            
+                            # 요약 추출
+                            summary = self._extract_nypost_summary(context, title)
+                            
+                            # 이미지 추출 (기존 로직 사용)
+                            image_url = self._extract_nypost_image(link, url)
+                            
+                            # 날짜 추출 (개선된 버전)
+                            published_date = self._extract_nypost_date_improved(context, url)
+                            
+                            # 카테고리 추출
+                            article_category = self._extract_category_from_url(url) or category
+                            
+                            article = {
+                                'title': title,
+                                'url': url,
+                                'summary': summary[:300] if summary else title[:200],
+                                'published_date': published_date,
+                                'source': 'NY Post',
+                                'category': article_category,
+                                'scraped_at': datetime.now().isoformat(),
+                                'relevance_score': 1,
+                                'image_url': image_url
+                            }
+                            
+                            articles.append(article)
+                            
+                            if len(articles) >= limit:
+                                break
+                                
+                        except Exception as e:
+                            logger.debug(f"NY Post 개별 기사 처리 실패: {e}")
+                            continue
+                    
+                    if len(articles) >= limit:
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"NY Post selector {selector} 처리 실패: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"NY Post 카테고리 HTML 파싱 실패: {e}")
+        
+        return articles[:limit]
+    
+    def _extract_nypost_summary(self, element, title: str) -> str:
+        """NY Post 기사에서 요약 추출"""
+        summary = ''
+        
+        try:
+            if hasattr(element, 'find_all'):
+                # NY Post 요약 패턴들
+                summary_selectors = [
+                    'p',
+                    '.excerpt', 
+                    '.summary',
+                    '.description',
+                    '.entry-content p',
+                    '.story-summary'
+                ]
+                
+                for selector in summary_selectors:
+                    elements = element.find_all(selector)
+                    
+                    for elem in elements:
+                        text = elem.get_text(strip=True)
+                        
+                        # 유효한 요약인지 확인
+                        if (len(text) > 30 and len(text) < 500 and
+                            text != title and
+                            not text.startswith('NY Post') and
+                            not text.startswith('New York Post') and
+                            not text.startswith('Published') and
+                            not text.lower().startswith('click here') and
+                            not text.lower().startswith('read more') and
+                            'nypost.com' not in text.lower()):
+                            
+                            summary = text
+                            break
+                    
+                    if summary:
+                        break
+                        
+        except Exception as e:
+            logger.debug(f"NY Post 요약 추출 실패: {e}")
+        
+        return summary
+    
+    def _extract_nypost_date_improved(self, element, url: str) -> str:
+        """NY Post 기사에서 날짜 추출 - 개선된 버전"""
+        try:
+            # 1. 요소에서 날짜 찾기
+            if hasattr(element, 'get_text'):
+                text = element.get_text()
+                
+                # NY Post 날짜 패턴들
+                date_patterns = [
+                    r'Published\s*:\s*(\w+\s+\d{1,2},\s*\d{4})',  # Published: July 17, 2025
+                    r'(\w+\s+\d{1,2},\s*\d{4})',  # July 17, 2025
+                    r'(\d{1,2}/\d{1,2}/\d{4})',  # 7/17/2025
+                    r'(\d{4}-\d{1,2}-\d{1,2})',  # 2025-07-17
+                    r'(\d{1,2})\s+hours?\s+ago',  # 5 hours ago
+                    r'(\d{1,2})\s+days?\s+ago'    # 2 days ago
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        try:
+                            date_str = match.group(1) if 'hours ago' in pattern or 'days ago' in pattern else match.group(0)
+                            
+                            if 'hours ago' in text.lower():
+                                hours = int(match.group(1))
+                                date_obj = datetime.now() - timedelta(hours=hours)
+                                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                            elif 'days ago' in text.lower():
+                                days = int(match.group(1))
+                                date_obj = datetime.now() - timedelta(days=days)
+                                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                            else:
+                                # 일반 날짜 형식들
+                                for fmt in ['%B %d, %Y', '%b %d, %Y', '%m/%d/%Y', '%Y-%m-%d']:
+                                    try:
+                                        if 'Published:' in date_str:
+                                            date_str = date_str.replace('Published:', '').strip()
+                                        date_obj = datetime.strptime(date_str, fmt)
+                                        return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                                    except:
+                                        continue
+                        except:
+                            continue
+            
+            # 2. URL에서 날짜 추출 (NY Post URL 패턴)
+            # NY Post URL 형태: https://nypost.com/2025/07/17/sports/article-title/
+            url_patterns = [
+                r'/(\d{4})/(\d{1,2})/(\d{1,2})/',  # /2025/07/17/
+                r'-(\d{4})-(\d{1,2})-(\d{1,2})-',  # -2025-07-17-
+                r'/(\d{4})-(\d{1,2})-(\d{1,2})-'   # /2025-07-17-
+            ]
+            
+            for pattern in url_patterns:
+                match = re.search(pattern, url)
+                if match:
+                    try:
+                        year, month, day = match.groups()[:3]
+                        date_obj = datetime(int(year), int(month), int(day))
+                        return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                    except:
+                        continue
+                        
+        except Exception as e:
+            logger.debug(f"NY Post 날짜 추출 실패: {e}")
+        
+        return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT') 

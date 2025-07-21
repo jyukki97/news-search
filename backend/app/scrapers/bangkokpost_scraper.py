@@ -467,17 +467,20 @@ class BangkokPostScraper:
     def get_latest_news(self, category: str = 'news', limit: int = 10) -> List[Dict]:
         """Bangkok Post 최신 뉴스 가져오기"""
         try:
-            # 카테고리별 URL 매핑
+            # 카테고리별 URL 매핑 (실제 Bangkok Post 구조에 맞게 수정)
             category_urls = {
+                'all': self.base_url,
                 'news': f"{self.base_url}/thailand",
                 'business': f"{self.base_url}/business",
-                'sports': f"{self.base_url}/sports", 
-                'tech': f"{self.base_url}/tech",
+                'sports': f"{self.base_url}/sports",
+                'sport': f"{self.base_url}/sports", 
+                'tech': f"{self.base_url}/life/tech",
+                'technology': f"{self.base_url}/life/tech",
                 'world': f"{self.base_url}/world",
-                'travel': f"{self.base_url}/travel",
-                'lifestyle': f"{self.base_url}/lifestyle",
-                'opinion': f"{self.base_url}/opinion",
-                'all': self.base_url
+                'travel': f"{self.base_url}/life/travel",
+                'lifestyle': f"{self.base_url}/life/social-and-lifestyle",
+                'entertainment': f"{self.base_url}/life/arts-and-entertainment",
+                'opinion': f"{self.base_url}/opinion"
             }
             
             url = category_urls.get(category, category_urls['news'])
@@ -487,22 +490,238 @@ class BangkokPostScraper:
             response = requests.get(url, headers=self.headers, timeout=15)
             response.raise_for_status()
             
-            articles = self._extract_search_results(response.text, limit)
+            # 실제 웹사이트 구조에 맞게 기사 추출
+            articles = self._extract_bangkokpost_articles(response.text, limit, category)
             logger.info(f"Bangkok Post 최신 뉴스 {len(articles)}개 수집")
-            
-            # 결과가 없거나 적으면 search_news로 fallback
-            if not articles or len(articles) < limit // 2:
-                logger.info("Bangkok Post 최신 뉴스 결과 부족, 검색으로 fallback")
-                return self.search_news('breaking news', limit)
             
             return articles
             
         except Exception as e:
             logger.error(f"Bangkok Post 최신 뉴스 가져오기 실패: {e}")
-            # 404나 다른 오류 시 search_news로 fallback
-            logger.info("Bangkok Post 최신 뉴스 실패, 검색으로 fallback")
-            try:
-                return self.search_news('breaking news', limit)
-            except Exception as fallback_error:
-                logger.error(f"Bangkok Post fallback 검색도 실패: {fallback_error}")
-                return [] 
+            return []
+    
+    def _extract_bangkokpost_articles(self, html_content: str, limit: int, category: str = '') -> List[Dict]:
+        """Bangkok Post 웹사이트 구조에 맞게 기사 추출"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Bangkok Post 실제 기사 선택자들 (웹 검색 결과 분석 기반)
+            article_selectors = [
+                # 메인 기사들
+                'h3 a[href*="/"]',  # h3 태그 안의 링크
+                'h2 a[href*="/"]',  # h2 태그 안의 링크
+                'h4 a[href*="/"]',  # h4 태그 안의 링크
+                # 기사 컨테이너들
+                '.story a[href*="/"]',
+                '.article a[href*="/"]',
+                '.news-item a[href*="/"]',
+                # 일반적인 링크들
+                'a[href*="/"][href*="-"]'  # URL에 하이픈이 포함된 기사 링크
+            ]
+            
+            found_urls = set()
+            
+            for selector in article_selectors:
+                try:
+                    links = soup.select(selector)
+                    logger.debug(f"Bangkok Post {selector}: {len(links)}개 링크 발견")
+                    
+                    for link in links:
+                        try:
+                            title = link.get_text(strip=True)
+                            url = link.get('href', '')
+                            
+                            # 기본 검증
+                            if not title or len(title) < 10:
+                                continue
+                                
+                            if not url:
+                                continue
+                                
+                            # URL 정규화
+                            if not url.startswith('http'):
+                                if url.startswith('/'):
+                                    url = self.base_url + url
+                                else:
+                                    url = self.base_url + '/' + url
+                            
+                            # Bangkok Post URL 확인
+                            if 'bangkokpost.com' not in url:
+                                continue
+                                
+                            # 중복 확인
+                            if url in found_urls:
+                                continue
+                            found_urls.add(url)
+                            
+                            # 불필요한 링크 필터링
+                            if any(skip in url.lower() for skip in [
+                                '/search', '/login', '/register', '/subscribe', 
+                                '/contact', '/about', '/terms', '/privacy',
+                                'facebook.com', 'twitter.com', 'instagram.com'
+                            ]):
+                                continue
+                                
+                            # 너무 짧은 제목 제외
+                            if len(title) < 15:
+                                continue
+                                
+                            # 네비게이션 링크들 제외
+                            if any(nav in title.lower() for nav in [
+                                'home', 'search', 'subscribe', 'login', 'register',
+                                'facebook', 'twitter', 'instagram', 'contact',
+                                'general', 'motoring', 'investment', 'columnist',
+                                'special features', 'campaign', 'events', 'multimedia',
+                                'photos', 'video', 'podcast', 'sustainability', 'learning',
+                                'guru', 'life', 'travel', 'arts', 'entertainment',
+                                'social', 'lifestyle', 'opinion', 'postbag'
+                            ]):
+                                continue
+                            
+                            # 요약과 이미지 추출을 위해 링크의 부모 요소 찾기
+                            parent = link.parent
+                            if parent:
+                                # 부모의 부모까지 확인
+                                grand_parent = parent.parent
+                                context = grand_parent if grand_parent else parent
+                            else:
+                                context = link
+                            
+                            # 요약 추출
+                            summary = self._extract_bangkokpost_summary(context, title)
+                            
+                            # 이미지 추출
+                            image_url = self._extract_bangkokpost_image(context, url)
+                            
+                            # 날짜 추출
+                            published_date = self._extract_bangkokpost_date(context, url)
+                            
+                            # 카테고리 추출
+                            article_category = self._extract_category_from_url(url) or category
+                            
+                            article = {
+                                'title': title,
+                                'url': url,
+                                'summary': summary[:300] if summary else title[:200],
+                                'published_date': published_date,
+                                'source': 'Bangkok Post',
+                                'category': article_category,
+                                'scraped_at': datetime.now().isoformat(),
+                                'relevance_score': 1,
+                                'image_url': image_url
+                            }
+                            
+                            articles.append(article)
+                            
+                            if len(articles) >= limit:
+                                break
+                                
+                        except Exception as e:
+                            logger.debug(f"Bangkok Post 개별 기사 처리 실패: {e}")
+                            continue
+                    
+                    if len(articles) >= limit:
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"Bangkok Post selector {selector} 처리 실패: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Bangkok Post HTML 파싱 실패: {e}")
+        
+        # 결과 검증 및 정렬
+        valid_articles = []
+        for article in articles:
+            # 최종 검증
+            if (article['title'] and len(article['title']) >= 15 and
+                article['url'] and 'bangkokpost.com' in article['url']):
+                valid_articles.append(article)
+        
+        return valid_articles[:limit]
+    
+    def _extract_bangkokpost_summary(self, element, title: str) -> str:
+        """Bangkok Post 기사에서 요약 추출"""
+        summary = ''
+        
+        try:
+            # 다양한 요약 패턴 찾기
+            summary_selectors = [
+                'p',  # 일반적인 단락
+                '.excerpt',
+                '.summary', 
+                '.description',
+                '.lead',
+                '.intro'
+            ]
+            
+            for selector in summary_selectors:
+                elements = element.find_all(selector) if hasattr(element, 'find_all') else []
+                
+                for elem in elements:
+                    text = elem.get_text(strip=True)
+                    
+                    # 유효한 요약인지 확인
+                    if (len(text) > 30 and len(text) < 500 and
+                        text != title and
+                        not text.startswith('Bangkok Post') and
+                        not text.startswith('Published on') and
+                        not text.lower().startswith('click here') and
+                        not text.lower().startswith('read more') and
+                        'bangkokpost.com' not in text.lower()):
+                        
+                        summary = text
+                        break
+                
+                if summary:
+                    break
+                    
+        except Exception as e:
+            logger.debug(f"Bangkok Post 요약 추출 실패: {e}")
+        
+        return summary
+    
+    def _extract_bangkokpost_date(self, element, url: str) -> str:
+        """Bangkok Post 기사에서 날짜 추출"""
+        try:
+            # 요소에서 날짜 찾기
+            if hasattr(element, 'get_text'):
+                text = element.get_text()
+                
+                # Bangkok Post 날짜 패턴들
+                date_patterns = [
+                    r'(\d{1,2}\s+Jul\s+2025)',  # "17 Jul 2025" 형태
+                    r'(\d{1,2}\s+\w{3}\s+\d{4})',  # "17 Jul 2025" 일반화
+                    r'(\d{1,2}[-/]\d{1,2}[-/]\d{4})',
+                    r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})'
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        date_str = match.group(0)
+                        try:
+                            # 여러 날짜 형식 시도
+                            for fmt in ['%d %b %Y', '%d %B %Y', '%m/%d/%Y', '%m-%d-%Y', '%Y/%m/%d', '%Y-%m-%d']:
+                                try:
+                                    date_obj = datetime.strptime(date_str, fmt)
+                                    return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                                except:
+                                    continue
+                        except:
+                            continue
+            
+            # URL에서 날짜 추출 시도
+            url_date_match = re.search(r'/(\d{4})/(\d{1,2})/(\d{1,2})/', url)
+            if url_date_match:
+                year, month, day = url_date_match.groups()
+                date_obj = datetime(int(year), int(month), int(day))
+                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                
+        except Exception as e:
+            logger.debug(f"Bangkok Post 날짜 추출 실패: {e}")
+        
+        # 기본값: 현재 시간
+        return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT') 

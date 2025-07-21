@@ -877,5 +877,283 @@ class HybridSCMPScraper:
             return 'General'
     
     def get_latest_news(self, category: str = 'news', limit: int = 10) -> List[Dict]:
-        """카테고리별 최신 뉴스 가져오기"""
-        return self._get_homepage_articles(limit) 
+        """카테고리별 최신 뉴스 가져오기 - 실제 SCMP 카테고리 페이지 사용"""
+        try:
+            logger.info(f"SCMP 실제 카테고리별 뉴스 요청: {category}")
+            
+            # 실제 SCMP 카테고리별 URL들
+            category_urls = {
+                'all': 'https://www.scmp.com',
+                'news': 'https://www.scmp.com/news',
+                'business': 'https://www.scmp.com/business',
+                'sports': 'https://www.scmp.com/sport',
+                'sport': 'https://www.scmp.com/sport',
+                'technology': 'https://www.scmp.com/tech',
+                'tech': 'https://www.scmp.com/tech',
+                'entertainment': 'https://www.scmp.com/lifestyle/entertainment',
+                'health': 'https://www.scmp.com/lifestyle/health-wellness',
+                'world': 'https://www.scmp.com/news/world',
+                'china': 'https://www.scmp.com/news/china',
+                'hongkong': 'https://www.scmp.com/news/hong-kong',
+                'lifestyle': 'https://www.scmp.com/lifestyle'
+            }
+            
+            url = category_urls.get(category, category_urls['news'])
+            logger.info(f"SCMP 카테고리 페이지 접근: {url}")
+            
+            # 실제 카테고리 페이지에서 기사 추출
+            try:
+                response = requests.get(url, headers=self.headers, timeout=15)
+                response.raise_for_status()
+                
+                articles = self._extract_scmp_category_articles(response.text, limit, category)
+                
+                if articles:
+                    logger.info(f"SCMP {category} 카테고리에서 {len(articles)}개 기사 추출")
+                    return articles
+                else:
+                    logger.info(f"SCMP {category} 카테고리 추출 실패, 검색으로 폴백")
+                    
+            except Exception as e:
+                logger.warning(f"SCMP 카테고리 페이지 접근 실패: {e}, 검색으로 폴백")
+            
+            # 폴백: 카테고리별 키워드 검색 (기존 로직)
+            category_keywords = {
+                'news': 'Hong Kong China news',
+                'business': 'business economy markets',
+                'sports': 'sports football Hong Kong',
+                'sport': 'sports football Hong Kong',
+                'technology': 'technology tech innovation',
+                'tech': 'technology tech innovation',
+                'health': 'health wellness medical',
+                'entertainment': 'entertainment celebrity culture',
+                'world': 'world international news',
+                'china': 'China Beijing',
+                'hongkong': 'Hong Kong'
+            }
+            
+            keyword = category_keywords.get(category, 'Hong Kong news')
+            logger.info(f"SCMP 검색 폴백: {category} -> {keyword}")
+            
+            return self.search_news(keyword, limit)
+            
+        except Exception as e:
+            logger.error(f"SCMP 카테고리별 뉴스 가져오기 실패: {e}")
+            # 최종 폴백: 홈페이지 기사
+            return self._get_homepage_articles(limit)
+    
+    def _extract_scmp_category_articles(self, html_content: str, limit: int, category: str) -> List[Dict]:
+        """SCMP 카테고리 페이지에서 기사 추출"""
+        articles = []
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # SCMP 기사 링크 선택자들
+            article_selectors = [
+                # 메인 기사 링크들
+                'h2 a[href*="/article/"]',
+                'h3 a[href*="/article/"]',
+                'h4 a[href*="/article/"]',
+                # 기사 컨테이너들
+                'article a[href*="/article/"]',
+                '.story a[href*="/article/"]',
+                '.post a[href*="/article/"]',
+                # 일반적인 SCMP 기사 링크들
+                'a[href*="scmp.com"][href*="/article/"]',
+                'a[href*="/news/"][href*="/article/"]',
+                'a[href*="/business/"][href*="/article/"]',
+                'a[href*="/sport/"][href*="/article/"]'
+            ]
+            
+            found_urls = set()
+            
+            for selector in article_selectors:
+                try:
+                    links = soup.select(selector)
+                    logger.debug(f"SCMP {selector}: {len(links)}개 링크 발견")
+                    
+                    for link in links:
+                        try:
+                            title = link.get_text(strip=True)
+                            url = link.get('href', '')
+                            
+                            # 기본 검증
+                            if not title or len(title) < 15:
+                                continue
+                                
+                            if not url or '/article/' not in url:
+                                continue
+                                
+                            # URL 정규화
+                            if url.startswith('/'):
+                                url = 'https://www.scmp.com' + url
+                            elif not url.startswith('http'):
+                                url = 'https://www.scmp.com/' + url
+                            
+                            # SCMP URL 확인
+                            if 'scmp.com' not in url:
+                                continue
+                                
+                            # 중복 확인
+                            if url in found_urls:
+                                continue
+                            found_urls.add(url)
+                            
+                            # 불필요한 링크 필터링
+                            if any(skip in url.lower() for skip in [
+                                '/search', '/login', '/register', '/subscribe', 
+                                '/contact', '/about', '/terms', '/privacy'
+                            ]):
+                                continue
+                            
+                            # 링크 주변에서 정보 추출
+                            parent = link.parent
+                            context = parent.parent if parent and parent.parent else parent if parent else link
+                            
+                            # 요약 추출
+                            summary = self._extract_scmp_summary(context, title)
+                            
+                            # 이미지 추출 (기존 로직 사용)
+                            image_url = self._extract_scmp_image(link, url)
+                            
+                            # 날짜 추출 (기존 로직 사용)
+                            published_date = self._extract_scmp_date(context, url)
+                            
+                            # 카테고리 추출
+                            article_category = self._extract_category_from_url(url) or category
+                            
+                            article = {
+                                'title': title,
+                                'url': url,
+                                'summary': summary[:300] if summary else title[:200],
+                                'published_date': published_date,
+                                'source': 'SCMP',
+                                'category': article_category,
+                                'scraped_at': datetime.now().isoformat(),
+                                'relevance_score': 1,
+                                'image_url': image_url
+                            }
+                            
+                            articles.append(article)
+                            
+                            if len(articles) >= limit:
+                                break
+                                
+                        except Exception as e:
+                            logger.debug(f"SCMP 개별 기사 처리 실패: {e}")
+                            continue
+                    
+                    if len(articles) >= limit:
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"SCMP selector {selector} 처리 실패: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"SCMP 카테고리 HTML 파싱 실패: {e}")
+        
+        return articles[:limit]
+    
+    def _extract_scmp_summary(self, element, title: str) -> str:
+        """SCMP 기사에서 요약 추출"""
+        summary = ''
+        
+        try:
+            if hasattr(element, 'find_all'):
+                # SCMP 요약 패턴들
+                summary_selectors = [
+                    'p',
+                    '.excerpt', 
+                    '.summary',
+                    '.description',
+                    '.story-summary'
+                ]
+                
+                for selector in summary_selectors:
+                    elements = element.find_all(selector)
+                    
+                    for elem in elements:
+                        text = elem.get_text(strip=True)
+                        
+                        # 유효한 요약인지 확인
+                        if (len(text) > 30 and len(text) < 500 and
+                            text != title and
+                            not text.startswith('SCMP') and
+                            not text.startswith('South China Morning Post') and
+                            not text.lower().startswith('click here') and
+                            not text.lower().startswith('read more') and
+                            'scmp.com' not in text.lower()):
+                            
+                            summary = text
+                            break
+                    
+                    if summary:
+                        break
+                        
+        except Exception as e:
+            logger.debug(f"SCMP 요약 추출 실패: {e}")
+        
+        return summary
+    
+    def _extract_scmp_date(self, element, url: str) -> str:
+        """SCMP 기사에서 날짜 추출"""
+        try:
+            # 기존 날짜 추출 로직 사용
+            if hasattr(element, 'get_text'):
+                text = element.get_text()
+                
+                # SCMP 날짜 패턴들
+                date_patterns = [
+                    r'(\d{1,2}\s+\w+\s+\d{4})',  # 17 July 2025
+                    r'(\w+\s+\d{1,2},\s*\d{4})',  # July 17, 2025
+                    r'(\d{1,2}/\d{1,2}/\d{4})',  # 17/07/2025
+                    r'(\d{4}-\d{1,2}-\d{1,2})'   # 2025-07-17
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        try:
+                            date_str = match.group(0)
+                            for fmt in ['%d %B %Y', '%B %d, %Y', '%d %b %Y', '%b %d, %Y', '%d/%m/%Y', '%Y-%m-%d']:
+                                try:
+                                    date_obj = datetime.strptime(date_str, fmt)
+                                    return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                                except:
+                                    continue
+                        except:
+                            continue
+            
+            # URL에서 날짜 추출
+            url_match = re.search(r'/article/(\d+)', url)
+            if url_match:
+                # SCMP 기사 ID에서 날짜 추출 시도 (추후 구현 가능)
+                pass
+                
+        except Exception as e:
+            logger.debug(f"SCMP 날짜 추출 실패: {e}")
+        
+        return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    
+    def _extract_scmp_image(self, link_elem, article_url: str) -> str:
+        """SCMP 기사에서 이미지 추출 (기존 로직 재사용)"""
+        try:
+            # 기존 이미지 추출 로직을 재사용
+            # 여기서는 간단히 처리
+            if hasattr(link_elem, 'find'):
+                img_elem = link_elem.find('img')
+                if img_elem:
+                    for attr in ['src', 'data-src', 'data-lazy-src']:
+                        img_src = img_elem.get(attr, '')
+                        if img_src and ('scmp.com' in img_src or img_src.startswith('//')):
+                            if img_src.startswith('//'):
+                                return 'https:' + img_src
+                            elif img_src.startswith('/'):
+                                return 'https://www.scmp.com' + img_src
+                            return img_src
+        except Exception as e:
+            logger.debug(f"SCMP 이미지 추출 실패: {e}")
+        
+        return '' 

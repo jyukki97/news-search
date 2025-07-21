@@ -45,25 +45,20 @@ def run_scraper_search(scraper, query, limit):
         logger.error(f"{scraper.__class__.__name__} 검색 실패: {e}")
         return []
 
-def run_scraper_trending(scraper, query, limit):
+def run_scraper_trending(scraper, category, limit):
     """스크래퍼 트렌딩 뉴스를 실행하는 헬퍼 함수 (트렌딩용)"""
     try:
         scraper_name = scraper.__class__.__name__
-        logger.info(f"{scraper_name} 트렌딩 뉴스 시작: query={query}, limit={limit}")
+        logger.info(f"{scraper_name} 트렌딩 뉴스 시작: category={category}, limit={limit}")
         
         # 모든 사이트에서 실제 최신/메인 뉴스 사용 (검색이 아닌 트렌딩)
         if hasattr(scraper, 'get_latest_news'):
-            # 쿼리를 카테고리로 변환
-            category_mapping = {
-                'breaking news': 'news',
-                'sports': 'sport',
-                'business economy': 'business',
-                'technology tech': 'technology',
-                'entertainment celebrity': 'entertainment',
-                'health': 'health',
-                'world international': 'world'
-            }
-            category = category_mapping.get(query, 'news')
+            # 카테고리를 스크래퍼별로 적절히 매핑
+            if scraper_name == 'BBCNewsScraper':
+                # BBC는 sports도 지원하지만 sport로 통일
+                if category == 'sports':
+                    category = 'sport'
+            
             logger.info(f"{scraper_name}에서 get_latest_news 호출: category={category}")
             
             result = scraper.get_latest_news(category, limit)
@@ -199,18 +194,49 @@ async def search_news(
     query: str = Query(..., description="검색할 키워드"),
     page: int = Query(1, ge=1, description="페이지 번호 (1부터 시작)"),
     per_site_limit: int = Query(10, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
-    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)"),
+    sources: str = Query("all", description="검색할 사이트 (all, asia, europe, north_america, english, asian, 또는 구체적인 사이트명들을 콤마로 구분)"),
     sort: str = Query("date_desc", description="정렬 방식 (date_desc: 최신순, date_asc: 과거순, relevance: 관련도순)"),
     date_from: Optional[str] = Query(None, description="시작 날짜 (YYYY-MM-DD 형식)"),
     date_to: Optional[str] = Query(None, description="종료 날짜 (YYYY-MM-DD 형식)"),
     group_by_source: bool = Query(False, description="출처별로 그룹핑하여 반환할지 여부")
 ) -> Dict:
-    """뉴스 통합 검색 (사이트별 페이지네이션 및 출처별 그룹핑 지원)"""
+    """뉴스 통합 검색 (사이트별 페이지네이션 및 출처별 그룹핑 지원, 지역별/언어별 필터링)"""
     try:
         logger.info(f"뉴스 통합 검색 요청: {query}, 페이지: {page}, 사이트당: {per_site_limit}개, 사이트: {sources}, 그룹핑: {group_by_source}")
         
-        # 검색할 사이트 파싱
+        # 검색할 사이트 파싱 및 그룹 확장
         requested_sources = [s.strip().lower() for s in sources.split(",")] if sources != "all" else ["all"]
+        
+        # 지역별/언어별 그룹을 실제 사이트 목록으로 확장
+        expanded_sources = []
+        
+        # 지역별 그룹핑 매핑
+        region_groups = {
+            "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri"],
+            "europe": ["bbc", "thesun", "dailymail"],
+            "north_america": ["nypost"],
+            "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost"],
+            "asian": ["vnexpress", "asahi", "yomiuri"]
+        }
+        
+        for source in requested_sources:
+            if source == "all":
+                expanded_sources = ["all"]
+                break
+            elif source in region_groups:
+                # 지역/언어 그룹을 개별 사이트로 확장
+                expanded_sources.extend(region_groups[source])
+                logger.info(f"검색: 그룹 '{source}' 확장: {region_groups[source]}")
+            else:
+                # 개별 사이트 추가
+                expanded_sources.append(source)
+        
+        # 중복 제거
+        if "all" not in expanded_sources:
+            expanded_sources = list(set(expanded_sources))
+            logger.info(f"검색: 최종 사이트 목록: {expanded_sources}")
+        
+        requested_sources = expanded_sources
         
         # 각 사이트에서 페이지별로 가져올 기사 수 계산
         # 페이지네이션을 위해 더 많이 가져온 후 필요한 부분만 추출
@@ -451,53 +477,70 @@ async def get_latest_news(
 async def get_trending_news(
     category: str = Query("all", description="카테고리 (all, news, sports, business, technology, entertainment)"),
     limit: int = Query(2, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
-    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)")
+    sources: str = Query("all", description="검색할 사이트 (all, asia, europe, north_america, english, asian, 또는 구체적인 사이트명들을 콤마로 구분)")
 ) -> Dict:
-    """각 사이트별 인기/트렌딩 뉴스 가져오기"""
+    """각 사이트별 인기/트렌딩 뉴스 가져오기 (지역별/언어별 필터링 지원)"""
     try:
         logger.info(f"트렌딩 뉴스 요청: 카테고리={category}, 사이트당={limit}개, 사이트={sources}")
         
-        # 검색할 사이트 파싱
+        # 검색할 사이트 파싱 및 그룹 확장
         requested_sources = [s.strip().lower() for s in sources.split(",")] if sources != "all" else ["all"]
         
-        # 카테고리별 키워드 매핑
-        category_keywords = {
-            "all": "breaking news",
-            "news": "breaking news",
-            "sports": "sports",
-            "business": "business economy",
-            "technology": "technology tech",
-            "entertainment": "entertainment celebrity",
-            "health": "health",
-            "world": "world international"
+        # 지역별/언어별 그룹을 실제 사이트 목록으로 확장
+        expanded_sources = []
+        
+        # 지역별 그룹핑 매핑
+        region_groups = {
+            "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri"],
+            "europe": ["bbc", "thesun", "dailymail"],
+            "north_america": ["nypost"],
+            "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost"],
+            "asian": ["vnexpress", "asahi", "yomiuri"]
         }
         
-        search_keyword = category_keywords.get(category.lower(), "breaking news")
+        for source in requested_sources:
+            if source == "all":
+                expanded_sources = ["all"]
+                break
+            elif source in region_groups:
+                # 지역/언어 그룹을 개별 사이트로 확장
+                expanded_sources.extend(region_groups[source])
+                logger.info(f"그룹 '{source}' 확장: {region_groups[source]}")
+            else:
+                # 개별 사이트 추가
+                expanded_sources.append(source)
         
-        # 병렬로 여러 사이트에서 트렌딩 뉴스 가져오기 (최적화된 병렬 처리)
+        # 중복 제거
+        if "all" not in expanded_sources:
+            expanded_sources = list(set(expanded_sources))
+            logger.info(f"최종 사이트 목록: {expanded_sources}")
+        
+        requested_sources = expanded_sources
+        
+        # 병렬로 여러 사이트에서 트렌딩 뉴스 가져오기 (카테고리 직접 전달)
         max_workers = int(os.getenv('MAX_WORKERS', '4'))  # 적절한 병렬성 유지
         scraper_timeout = int(os.getenv('SCRAPER_TIMEOUT', '15'))  # 무료 서버를 고려해 넉넉하게
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             
             if sources == "all" or "bbc" in requested_sources:
-                futures[executor.submit(run_scraper_trending, bbc_scraper, search_keyword, limit)] = "BBC News"
+                futures[executor.submit(run_scraper_trending, bbc_scraper, category, limit)] = "BBC News"
             if sources == "all" or "vnexpress" in requested_sources:
-                futures[executor.submit(run_scraper_trending, vnexpress_scraper, search_keyword, limit)] = "VN Express"
+                futures[executor.submit(run_scraper_trending, vnexpress_scraper, category, limit)] = "VN Express"
             if sources == "all" or "bangkokpost" in requested_sources:
-                futures[executor.submit(run_scraper_trending, bangkokpost_scraper, search_keyword, limit)] = "Bangkok Post"
+                futures[executor.submit(run_scraper_trending, bangkokpost_scraper, category, limit)] = "Bangkok Post"
             if sources == "all" or "asahi" in requested_sources:
-                futures[executor.submit(run_scraper_trending, asahi_scraper, search_keyword, limit)] = "Asahi Shimbun"
+                futures[executor.submit(run_scraper_trending, asahi_scraper, category, limit)] = "Asahi Shimbun"
             if sources == "all" or "yomiuri" in requested_sources:
-                futures[executor.submit(run_scraper_trending, yomiuri_scraper, search_keyword, limit)] = "Yomiuri Shimbun"
+                futures[executor.submit(run_scraper_trending, yomiuri_scraper, category, limit)] = "Yomiuri Shimbun"
             if sources == "all" or "thesun" in requested_sources:
-                futures[executor.submit(run_scraper_trending, thesun_scraper, search_keyword, limit)] = "The Sun"
+                futures[executor.submit(run_scraper_trending, thesun_scraper, category, limit)] = "The Sun"
             if sources == "all" or "nypost" in requested_sources:
-                futures[executor.submit(run_scraper_trending, nypost_scraper, search_keyword, limit)] = "NY Post"
+                futures[executor.submit(run_scraper_trending, nypost_scraper, category, limit)] = "NY Post"
             if sources == "all" or "dailymail" in requested_sources:
-                futures[executor.submit(run_scraper_trending, dailymail_scraper, search_keyword, limit)] = "Daily Mail"
+                futures[executor.submit(run_scraper_trending, dailymail_scraper, category, limit)] = "Daily Mail"
             if sources == "all" or "scmp" in requested_sources:
-                futures[executor.submit(run_scraper_trending, scmp_scraper, search_keyword, limit)] = "SCMP"
+                futures[executor.submit(run_scraper_trending, scmp_scraper, category, limit)] = "SCMP"
             
             # 결과 수집 (사이트별로 분리)
             trending_by_source = {}
@@ -510,14 +553,8 @@ async def get_trending_news(
                 try:
                     articles = future.result(timeout=scraper_timeout)
                     if articles:
-                        # 카테고리 필터링 (해당하는 경우)
-                        if category.lower() != "all":
-                            filtered_articles = []
-                            for article in articles:
-                                article_category = article.get('category', '').lower()
-                                if category.lower() in article_category or category.lower() == article_category:
-                                    filtered_articles.append(article)
-                            articles = filtered_articles if filtered_articles else articles[:limit//2]  # 카테고리 매치가 없으면 일부만
+                        # 카테고리 필터링 비활성화 - 스크래퍼가 이미 카테고리별 검색을 수행
+                        # 스크래퍼에서 반환하는 모든 기사를 그대로 사용
                         
                         trending_by_source[source_name] = articles[:limit]
                         active_sources.append(source_name)
@@ -545,7 +582,7 @@ async def get_trending_news(
 async def get_trending_news_stream(
     category: str = Query("all", description="카테고리 (all, news, sports, business, technology, entertainment)"),
     limit: int = Query(2, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
-    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)")
+    sources: str = Query("all", description="검색할 사이트 (all, asia, europe, north_america, english, asian, 또는 구체적인 사이트명들을 콤마로 구분)")
 ) -> StreamingResponse:
     """스트리밍 방식으로 각 사이트별 트렌딩 뉴스 실시간 전송"""
     
@@ -563,22 +600,41 @@ async def get_trending_news_stream(
             }
             yield f"data: {json.dumps(start_message)}\n\n"
             
-            # 검색할 사이트 파싱
+            # 검색할 사이트 파싱 및 그룹 확장
             requested_sources = [s.strip().lower() for s in sources.split(",")] if sources != "all" else ["all"]
             
-            # 카테고리별 키워드 매핑
-            category_keywords = {
-                "all": "breaking news",
-                "news": "breaking news", 
-                "sports": "sports",
-                "business": "business economy",
-                "technology": "technology tech",
-                "entertainment": "entertainment celebrity",
-                "health": "health",
-                "world": "world international"
+            # 지역별/언어별 그룹을 실제 사이트 목록으로 확장
+            expanded_sources = []
+            
+            # 지역별 그룹핑 매핑
+            region_groups = {
+                "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri"],
+                "europe": ["bbc", "thesun", "dailymail"],
+                "north_america": ["nypost"],
+                "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost"],
+                "asian": ["vnexpress", "asahi", "yomiuri"]
             }
             
-            search_keyword = category_keywords.get(category.lower(), "breaking news")
+            for source in requested_sources:
+                if source == "all":
+                    expanded_sources = ["all"]
+                    break
+                elif source in region_groups:
+                    # 지역/언어 그룹을 개별 사이트로 확장
+                    expanded_sources.extend(region_groups[source])
+                    logger.info(f"스트리밍: 그룹 '{source}' 확장: {region_groups[source]}")
+                else:
+                    # 개별 사이트 추가
+                    expanded_sources.append(source)
+            
+            # 중복 제거
+            if "all" not in expanded_sources:
+                expanded_sources = list(set(expanded_sources))
+                logger.info(f"스트리밍: 최종 사이트 목록: {expanded_sources}")
+            
+            requested_sources = expanded_sources
+            
+            # 카테고리를 직접 사용 (키워드 매핑 제거)
             
             # 스크래퍼 매핑
             scrapers_map = {
@@ -611,11 +667,11 @@ async def get_trending_news_stream(
                 # 모든 스크래퍼 실행
                 futures = {}
                 for scraper, name, key in selected_scrapers:
-                    future = executor.submit(run_scraper_trending, scraper, search_keyword, limit)
+                    future = executor.submit(run_scraper_trending, scraper, category, limit)
                     futures[future] = {"name": name, "key": key}
                 
-                # 완료되는 대로 실시간 전송
-                for future in concurrent.futures.as_completed(futures, timeout=scraper_timeout+2):
+                # 완료되는 대로 실시간 전송 (전체 타임아웃 제거로 병목 방지)
+                for future in concurrent.futures.as_completed(futures):
                     scraper_info = futures[future]
                     source_name = scraper_info["name"]
                     source_key = scraper_info["key"]
@@ -750,12 +806,138 @@ async def get_categories() -> Dict:
         "descriptions": categories
     }
 
+@router.get("/sources")
+async def get_available_sources() -> Dict:
+    """사용 가능한 뉴스 소스 목록과 그룹핑 정보 반환"""
+    sources = {
+        "all": {
+            "name": "모든 사이트",
+            "description": "전체 뉴스 사이트에서 검색",
+            "region": "global",
+            "language": "multi",
+            "status": "active"
+        },
+        "bbc": {
+            "name": "BBC News",
+            "description": "영국 공영방송 BBC 뉴스",
+            "region": "europe",
+            "language": "english",
+            "url": "https://www.bbc.com",
+            "status": "active"
+        },
+        "thesun": {
+            "name": "The Sun",
+            "description": "영국 대중지 더 선",
+            "region": "europe",
+            "language": "english",
+            "url": "https://www.thesun.co.uk",
+            "status": "active"
+        },
+        "nypost": {
+            "name": "NY Post",
+            "description": "미국 뉴욕포스트",
+            "region": "north_america",
+            "language": "english",
+            "url": "https://nypost.com",
+            "status": "active"
+        },
+        "dailymail": {
+            "name": "Daily Mail",
+            "description": "영국 데일리메일",
+            "region": "europe",
+            "language": "english",
+            "url": "https://www.dailymail.co.uk",
+            "status": "active"
+        },
+        "scmp": {
+            "name": "SCMP",
+            "description": "홍콩 사우스차이나모닝포스트",
+            "region": "asia",
+            "language": "english",
+            "url": "https://www.scmp.com",
+            "status": "active"
+        },
+        "vnexpress": {
+            "name": "VN Express",
+            "description": "베트남 VN익스프레스",
+            "region": "asia",
+            "language": "vietnamese",
+            "url": "https://vnexpress.net",
+            "status": "active"
+        },
+        "bangkokpost": {
+            "name": "Bangkok Post",
+            "description": "태국 방콕포스트",
+            "region": "asia",
+            "language": "english",
+            "url": "https://www.bangkokpost.com",
+            "status": "active"
+        },
+        "asahi": {
+            "name": "Asahi Shimbun",
+            "description": "일본 아사히신문",
+            "region": "asia",
+            "language": "japanese",
+            "url": "https://www.asahi.com",
+            "status": "active"
+        },
+        "yomiuri": {
+            "name": "Yomiuri Shimbun",
+            "description": "일본 요미우리신문",
+            "region": "asia",
+            "language": "japanese", 
+            "url": "https://www.yomiuri.co.jp",
+            "status": "active"
+        }
+    }
+    
+    # 지역별 그룹핑
+    regions = {
+        "asia": {
+            "name": "아시아",
+            "sources": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri"],
+            "description": "아시아 지역 뉴스 소스"
+        },
+        "europe": {
+            "name": "유럽",
+            "sources": ["bbc", "thesun", "dailymail"],
+            "description": "유럽 지역 뉴스 소스"
+        },
+        "north_america": {
+            "name": "북미",
+            "sources": ["nypost"],
+            "description": "북미 지역 뉴스 소스"
+        }
+    }
+    
+    # 언어별 그룹핑
+    languages = {
+        "english": {
+            "name": "영어",
+            "sources": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost"],
+            "description": "영어 뉴스 소스"
+        },
+        "asian": {
+            "name": "아시아 언어",
+            "sources": ["vnexpress", "asahi", "yomiuri"],
+            "description": "아시아 현지 언어 뉴스 소스"
+        }
+    }
+    
+    return {
+        "success": True,
+        "sources": sources,
+        "regions": regions,
+        "languages": languages,
+        "total_sources": len([k for k in sources.keys() if k != "all"])
+    }
+
 @router.get("/search/stream")
 async def search_news_stream(
     query: str = Query(..., description="검색할 키워드"),
     page: int = Query(1, ge=1, description="페이지 번호 (1부터 시작)"),
     per_site_limit: int = Query(10, ge=1, le=10, description="사이트당 가져올 기사 수 (1-10)"),
-    sources: str = Query("all", description="검색할 사이트 (all, bbc, thesun, nypost, dailymail, scmp, vnexpress, bangkokpost, asahi, yomiuri 중 콤마로 구분)"),
+    sources: str = Query("all", description="검색할 사이트 (all, asia, europe, north_america, english, asian, 또는 구체적인 사이트명들을 콤마로 구분)"),
     sort: str = Query("date_desc", description="정렬 방식 (date_desc: 최신순, date_asc: 과거순, relevance: 관련도순)")
 ) -> StreamingResponse:
     """스트리밍 방식으로 뉴스 검색 결과 실시간 전송"""
@@ -816,8 +998,8 @@ async def search_news_stream(
                     future = executor.submit(run_scraper_search, scraper, query, fetch_limit)
                     futures[future] = {"name": name, "key": key}
                 
-                # 완료되는 대로 실시간 전송
-                for future in futures:
+                # 완료되는 대로 실시간 전송 (병렬 처리로 병목 방지)
+                for future in concurrent.futures.as_completed(futures):
                     scraper_info = futures[future]
                     source_name = scraper_info["name"]
                     source_key = scraper_info["key"]
