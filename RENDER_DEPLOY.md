@@ -37,7 +37,7 @@ CORS_ORIGINS=https://news-search-frontend.onrender.com,http://localhost:3000
 
 ### 1.4 고급 설정
 ```yaml
-Health Check Path: /api/news/categories
+Health Check Path: /health
 Auto-Deploy: Yes
 Plan: Free
 ```
@@ -92,6 +92,9 @@ curl https://news-search-backend.onrender.com/health
 
 # 카테고리 API
 curl https://news-search-backend.onrender.com/api/news/categories
+
+# 루트 경로 테스트
+curl https://news-search-backend.onrender.com/
 ```
 
 ### 4.2 프론트엔드 테스트

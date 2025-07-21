@@ -6,7 +6,7 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /api/news/categories
+    healthCheckPath: /health
     envVars:
       - key: PYTHONPATH
         value: /app

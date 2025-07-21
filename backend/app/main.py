@@ -29,9 +29,11 @@ app.add_middleware(
 app.include_router(news_router)
 
 @app.get("/")
+@app.head("/")  # Render health check를 위한 HEAD 메서드 지원
 async def root():
     return {"message": "News Search API가 실행 중입니다!"}
 
 @app.get("/health")
+@app.head("/health")  # health check용 HEAD 메서드 지원
 async def health_check():
     return {"status": "healthy", "service": "news-search-backend"} 

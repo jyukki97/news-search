@@ -40,7 +40,7 @@ class HybridDailyMailScraper:
             from selenium.webdriver.chrome.options import Options
             return True
         except ImportError:
-            logger.warning("Selenium이 설치되어 있지 않습니다. HTTP 방식만 사용합니다.")
+            logger.info("Selenium이 설치되어 있지 않습니다. HTTP 방식만 사용합니다.")
             return False
     
     def search_news(self, query: str, limit: int = 10) -> List[Dict]:
