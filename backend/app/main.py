@@ -16,6 +16,9 @@ if cors_origins == "*":
     allowed_origins = ["*"]
 else:
     allowed_origins = [origin.strip() for origin in cors_origins.split(",")]
+    # onrender.com 도메인에 대한 패턴 매칭 지원
+    if any("onrender.com" in origin for origin in allowed_origins):
+        allowed_origins.append("https://*.onrender.com")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,6 +26,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"https://.*\.onrender\.com",  # onrender.com 서브도메인 모두 허용
 )
 
 # 뉴스 API 라우터 추가

@@ -73,15 +73,38 @@ Plan: Free
 
 ## 🔧 3단계: 배포 후 설정
 
-### 3.1 백엔드 URL 확인
-배포 완료 후 백엔드 URL을 확인하고 프론트엔드 환경변수를 업데이트:
+### 3.1 실제 배포된 URL 확인
+배포 완료 후 Render Dashboard에서 실제 할당된 URL을 확인합니다:
 
+1. **백엔드 URL 확인**: 
+   - Render Dashboard → news-search-backend 서비스
+   - URL 예시: `https://news-search-backend-flyf.onrender.com`
+
+2. **프론트엔드 URL 확인**:
+   - Render Dashboard → news-search-frontend 서비스  
+   - URL 예시: `https://news-search-frontend-xyz.onrender.com`
+
+### 3.2 환경변수 업데이트 (중요!)
+
+**❗ 주의**: render.yaml의 기본 URL은 예시입니다. 실제 배포된 URL로 반드시 업데이트해야 합니다.
+
+#### 백엔드 CORS 설정 업데이트:
 1. 백엔드 서비스 → Settings → Environment Variables
-2. `CORS_ORIGINS`에 실제 프론트엔드 URL 추가
+2. `CORS_ORIGINS` 값을 실제 프론트엔드 URL로 변경:
+   ```bash
+   https://your-actual-frontend-url.onrender.com,http://localhost:3000
+   ```
 
-### 3.2 프론트엔드 API URL 업데이트
+#### 프론트엔드 API URL 업데이트:
 1. 프론트엔드 서비스 → Settings → Environment Variables  
-2. `NEXT_PUBLIC_API_URL`을 실제 백엔드 URL로 업데이트
+2. `NEXT_PUBLIC_API_URL`을 실제 백엔드 URL로 변경:
+   ```bash
+   https://your-actual-backend-url.onrender.com
+   ```
+
+### 3.3 서비스 재시작
+환경변수 변경 후 서비스를 재시작합니다:
+1. Settings → General → Manual Deploy → "Deploy Latest Commit"
 
 ## 🧪 4단계: 배포 테스트
 
