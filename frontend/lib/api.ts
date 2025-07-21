@@ -48,8 +48,7 @@ export interface TrendingResponse {
 }
 
 // API 기본 URL - 환경변수 사용 (기본값: localhost)
-// Render 배포용 임시 하드코딩 (환경변수 문제 해결용)
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://news-search-backend-flyf.onrender.com'
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // API 요청 헬퍼 함수
 async function apiRequest<T>(endpoint: string, timeoutMs: number = 15000): Promise<T> {
