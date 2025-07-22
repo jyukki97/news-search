@@ -49,6 +49,7 @@ export default function Home() {
     { id: 'scmp', name: 'SCMP', icon: '🇭🇰', isSlow: true },
     { id: 'vnexpress', name: 'VN Express', icon: '🇻🇳', isSlow: false },
     { id: 'bangkokpost', name: 'Bangkok Post', icon: '🇹🇭', isSlow: false },
+    { id: 'thethaiger', name: 'The Thaiger', icon: '🐅', isSlow: false },
     { id: 'asahi', name: 'Asahi Shimbun', icon: '🇯🇵', isSlow: false },
     { id: 'yomiuri', name: 'Yomiuri Shimbun', icon: '📰', isSlow: false }
   ]
@@ -1101,7 +1102,7 @@ export default function Home() {
                 <div className="flex flex-wrap gap-2">
                   <button
                     onClick={() => {
-                      const asianSites = ['asahi', 'yomiuri', 'vnexpress', 'bangkokpost', 'scmp']
+                      const asianSites = ['asahi', 'yomiuri', 'vnexpress', 'bangkokpost', 'scmp', 'thethaiger']
                       const newSelection = { ...selectedSites }
                       asianSites.forEach(site => newSelection[site] = true)
                       Object.keys(newSelection).forEach(site => {
@@ -1146,7 +1147,7 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() => {
-                      const englishSites = ['bbc', 'thesun', 'nypost', 'dailymail', 'scmp', 'bangkokpost']
+                      const englishSites = ['bbc', 'thesun', 'nypost', 'dailymail', 'scmp', 'bangkokpost', 'thethaiger']
                       const newSelection = { ...selectedSites }
                       englishSites.forEach(site => newSelection[site] = true)
                       Object.keys(newSelection).forEach(site => {

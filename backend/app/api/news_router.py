@@ -20,6 +20,7 @@ from ..scrapers.yomiuri_scraper import YomiuriScraper
 from ..scrapers.hybrid_dailymail_scraper import HybridDailyMailScraper
 from ..scrapers.hybrid_scmp_scraper import HybridSCMPScraper
 from ..scrapers.hybrid_nypost_scraper import HybridNYPostScraper
+from ..scrapers.thethaiger_scraper import TheThaigerScraper
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ yomiuri_scraper = YomiuriScraper()
 nypost_scraper = HybridNYPostScraper()
 dailymail_scraper = HybridDailyMailScraper()
 scmp_scraper = HybridSCMPScraper()
+thethaiger_scraper = TheThaigerScraper()
 
 def run_scraper_search(scraper, query, limit):
     """스크래퍼 검색을 실행하는 헬퍼 함수 (실제 검색용)"""
@@ -212,10 +214,10 @@ async def search_news(
         
         # 지역별 그룹핑 매핑
         region_groups = {
-            "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri"],
+            "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri", "thethaiger"],
             "europe": ["bbc", "thesun", "dailymail"],
             "north_america": ["nypost"],
-            "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost"],
+            "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost", "thethaiger"],
             "asian": ["vnexpress", "asahi", "yomiuri"]
         }
         
@@ -267,6 +269,8 @@ async def search_news(
                 futures[executor.submit(run_scraper_search, dailymail_scraper, query, fetch_limit)] = "Daily Mail"
             if sources == "all" or "scmp" in requested_sources:
                 futures[executor.submit(run_scraper_search, scmp_scraper, query, fetch_limit)] = "SCMP"
+            if sources == "all" or "thethaiger" in requested_sources:
+                futures[executor.submit(run_scraper_search, thethaiger_scraper, query, fetch_limit)] = "The Thaiger"
             
             # 결과 수집
             all_articles = []
@@ -456,6 +460,15 @@ async def get_latest_news(
             except Exception as e:
                 logger.error(f"Yomiuri Shimbun 최신 뉴스 실패: {e}")
         
+        if source == "all" or source == "thethaiger":
+            try:
+                thethaiger_articles = thethaiger_scraper.get_latest_news(category, limit)
+                if thethaiger_articles:
+                    all_articles.extend(thethaiger_articles)
+                    sources.append("The Thaiger")
+            except Exception as e:
+                logger.error(f"The Thaiger 최신 뉴스 실패: {e}")
+        
         # 날짜 순으로 정렬
         if all_articles:
             all_articles.sort(key=lambda x: x.get('published_date', ''), reverse=True)
@@ -491,10 +504,10 @@ async def get_trending_news(
         
         # 지역별 그룹핑 매핑
         region_groups = {
-            "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri"],
+            "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri", "thethaiger"],
             "europe": ["bbc", "thesun", "dailymail"],
             "north_america": ["nypost"],
-            "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost"],
+            "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost", "thethaiger"],
             "asian": ["vnexpress", "asahi", "yomiuri"]
         }
         
@@ -541,6 +554,8 @@ async def get_trending_news(
                 futures[executor.submit(run_scraper_trending, dailymail_scraper, category, limit)] = "Daily Mail"
             if sources == "all" or "scmp" in requested_sources:
                 futures[executor.submit(run_scraper_trending, scmp_scraper, category, limit)] = "SCMP"
+            if sources == "all" or "thethaiger" in requested_sources:
+                futures[executor.submit(run_scraper_trending, thethaiger_scraper, category, limit)] = "The Thaiger"
             
             # 결과 수집 (사이트별로 분리)
             trending_by_source = {}
@@ -608,10 +623,10 @@ async def get_trending_news_stream(
             
             # 지역별 그룹핑 매핑
             region_groups = {
-                "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri"],
+                "asia": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri", "thethaiger"],
                 "europe": ["bbc", "thesun", "dailymail"],
                 "north_america": ["nypost"],
-                "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost"],
+                "english": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost", "thethaiger"],
                 "asian": ["vnexpress", "asahi", "yomiuri"]
             }
             
@@ -646,7 +661,8 @@ async def get_trending_news_stream(
                 "thesun": (thesun_scraper, "The Sun"),
                 "nypost": (nypost_scraper, "NY Post"),
                 "dailymail": (dailymail_scraper, "Daily Mail"),
-                "scmp": (scmp_scraper, "SCMP")
+                "scmp": (scmp_scraper, "SCMP"),
+                "thethaiger": (thethaiger_scraper, "The Thaiger")
             }
             
             # 선택된 스크래퍼들 필터링
@@ -888,6 +904,14 @@ async def get_available_sources() -> Dict:
             "language": "japanese", 
             "url": "https://www.yomiuri.co.jp",
             "status": "active"
+        },
+        "thethaiger": {
+            "name": "The Thaiger",
+            "description": "태국 영문 뉴스 사이트",
+            "region": "asia",
+            "language": "english",
+            "url": "https://thethaiger.com",
+            "status": "active"
         }
     }
     
@@ -895,7 +919,7 @@ async def get_available_sources() -> Dict:
     regions = {
         "asia": {
             "name": "아시아",
-            "sources": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri"],
+            "sources": ["scmp", "vnexpress", "bangkokpost", "asahi", "yomiuri", "thethaiger"],
             "description": "아시아 지역 뉴스 소스"
         },
         "europe": {
@@ -914,7 +938,7 @@ async def get_available_sources() -> Dict:
     languages = {
         "english": {
             "name": "영어",
-            "sources": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost"],
+            "sources": ["bbc", "thesun", "nypost", "dailymail", "scmp", "bangkokpost", "thethaiger"],
             "description": "영어 뉴스 소스"
         },
         "asian": {
@@ -974,7 +998,8 @@ async def search_news_stream(
                 "thesun": (thesun_scraper, "The Sun"),
                 "nypost": (nypost_scraper, "NY Post"),
                 "dailymail": (dailymail_scraper, "Daily Mail"),
-                "scmp": (scmp_scraper, "SCMP")
+                "scmp": (scmp_scraper, "SCMP"),
+                "thethaiger": (thethaiger_scraper, "The Thaiger")
             }
             
             # 선택된 스크래퍼들 필터링
