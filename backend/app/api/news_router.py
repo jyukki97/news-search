@@ -686,14 +686,15 @@ async def get_trending_news_stream(
                     future = executor.submit(run_scraper_trending, scraper, category, limit)
                     futures[future] = {"name": name, "key": key}
                 
-                # 완료되는 대로 실시간 전송 (전체 타임아웃 제거로 병목 방지)
+                # 완료되는 대로 실시간 전송 (진정한 비동기 처리)
                 for future in concurrent.futures.as_completed(futures):
                     scraper_info = futures[future]
                     source_name = scraper_info["name"]
                     source_key = scraper_info["key"]
                     
                     try:
-                        articles = future.result(timeout=scraper_timeout)
+                        # as_completed에서 반환된 future는 이미 완료되었으므로 타임아웃 불필요
+                        articles = future.result()
                         completed_scrapers += 1
                         
                         if articles:
@@ -1023,14 +1024,15 @@ async def search_news_stream(
                     future = executor.submit(run_scraper_search, scraper, query, fetch_limit)
                     futures[future] = {"name": name, "key": key}
                 
-                # 완료되는 대로 실시간 전송 (병렬 처리로 병목 방지)
+                # 완료되는 대로 실시간 전송 (진정한 병렬 처리로 병목 제거)
                 for future in concurrent.futures.as_completed(futures):
                     scraper_info = futures[future]
                     source_name = scraper_info["name"]
                     source_key = scraper_info["key"]
                     
                     try:
-                        articles = future.result(timeout=scraper_timeout)
+                        # as_completed에서 반환된 future는 이미 완료되었으므로 타임아웃 불필요
+                        articles = future.result()
                         completed_scrapers += 1
                         
                         if articles:
