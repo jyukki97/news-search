@@ -50,15 +50,15 @@ class TheThaigerScraper:
             soup = BeautifulSoup(html_content, 'html.parser')
             logger.info("The Thaiger HTML 파싱 시작, 크기: {} 문자".format(len(html_content)))
             
-            # 방법 1: 검색 결과 페이지 - <li class="post-item">
-            post_items = soup.find_all('li', class_='post-item')
-            logger.info("The Thaiger post-item 요소 수: {}개".format(len(post_items)))
+            # 방법 1: 새로운 구조 - latest-new-list div 요소들 (현재 웹사이트 구조)
+            latest_news_divs = soup.find_all('div', class_='latest-new-list')
+            logger.info("The Thaiger latest-new-list 요소 수: {}개".format(len(latest_news_divs)))
             
-            if post_items:
-                # 검색 결과 페이지 처리
-                for post_item in post_items[:limit]:
+            if latest_news_divs:
+                # 새로운 구조에서 기사 추출
+                for news_div in latest_news_divs[:limit]:
                     try:
-                        article = self._extract_article_from_post_item(post_item)
+                        article = self._extract_article_from_latest_news_div(news_div, context)
                         if article:
                             articles.append(article)
                             logger.debug("The Thaiger 기사 추출: {}".format(article['title'][:50]))
@@ -66,48 +66,64 @@ class TheThaigerScraper:
                         logger.debug("The Thaiger 기사 추출 오류: {}".format(e))
                         continue
             else:
-                # 방법 2: 홈페이지 - 모든 유효한 링크에서 추출
-                logger.info("The Thaiger post-item 없음, 홈페이지 모드로 전환")
-                all_links = soup.find_all('a', href=True)
-                valid_articles = []
+                # 방법 2: 레거시 구조 - <li class="post-item"> (이전 구조)
+                post_items = soup.find_all('li', class_='post-item')
+                logger.info("The Thaiger post-item 요소 수: {}개".format(len(post_items)))
                 
-                for link in all_links:
-                    href = link.get('href', '')
-                    if (self._is_valid_article_url(href) and 
-                        'thethaiger.com' in href):
-                        
-                        title = link.get_text(strip=True)
-                        if len(title) > 10:  # 의미있는 제목만
-                            valid_articles.append({
-                                'link': link,
-                                'title': title,
-                                'url': href,
-                                'parent': link.parent
-                            })
-                
-                logger.info("The Thaiger 홈페이지에서 {}개 유효한 링크 발견".format(len(valid_articles)))
-                
-                # 중복 제거
-                seen_urls = set()
-                unique_articles = []
-                for item in valid_articles:
-                    url = item['url']
-                    if url not in seen_urls:
-                        seen_urls.add(url)
-                        unique_articles.append(item)
-                
-                logger.info("The Thaiger 중복 제거 후: {}개".format(len(unique_articles)))
-                
-                # 기사 객체 생성
-                for item in unique_articles[:limit]:
-                    try:
-                        article = self._create_article_from_link_data(item)
-                        if article:
-                            articles.append(article)
-                            logger.debug("The Thaiger 홈페이지 기사: {}".format(article['title'][:50]))
-                    except Exception as e:
-                        logger.debug("The Thaiger 홈페이지 기사 오류: {}".format(e))
-                        continue
+                if post_items:
+                    # 레거시 검색 결과 페이지 처리
+                    for post_item in post_items[:limit]:
+                        try:
+                            article = self._extract_article_from_post_item(post_item, context)
+                            if article:
+                                articles.append(article)
+                                logger.debug("The Thaiger 레거시 기사 추출: {}".format(article['title'][:50]))
+                        except Exception as e:
+                            logger.debug("The Thaiger 레거시 기사 추출 오류: {}".format(e))
+                            continue
+                else:
+                    # 방법 3: 폴백 - 일반 링크에서 추출
+                    logger.info("The Thaiger 구조화된 요소 없음, 폴백 모드로 전환")
+                    all_links = soup.find_all('a', href=True)
+                    valid_articles = []
+                    
+                    for link in all_links:
+                        href = link.get('href', '')
+                        if (self._is_valid_article_url(href) and 
+                            'thethaiger.com' in href):
+                            
+                            title = link.get_text(strip=True)
+                            if len(title) > 10:  # 의미있는 제목만
+                                valid_articles.append({
+                                    'link': link,
+                                    'title': title,
+                                    'url': href,
+                                    'parent': link.parent
+                                })
+                    
+                    logger.info("The Thaiger 폴백에서 {}개 유효한 링크 발견".format(len(valid_articles)))
+                    
+                    # 중복 제거
+                    seen_urls = set()
+                    unique_articles = []
+                    for item in valid_articles:
+                        url = item['url']
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            unique_articles.append(item)
+                    
+                    logger.info("The Thaiger 중복 제거 후: {}개".format(len(unique_articles)))
+                    
+                    # 기사 객체 생성
+                    for item in unique_articles[:limit]:
+                        try:
+                            article = self._create_article_from_link_data(item, context)
+                            if article:
+                                articles.append(article)
+                                logger.debug("The Thaiger 폴백 기사: {}".format(article['title'][:50]))
+                        except Exception as e:
+                            logger.debug("The Thaiger 폴백 기사 오류: {}".format(e))
+                            continue
                     
             logger.info("The Thaiger 최종 추출: {}개 기사".format(len(articles)))
                     
@@ -116,7 +132,113 @@ class TheThaigerScraper:
         
         return articles
 
-    def _extract_article_from_post_item(self, post_item):
+    def _extract_article_from_latest_news_div(self, news_div, requested_category='all'):
+        """새로운 latest-new-list 구조에서 기사 정보 추출"""
+        try:
+            # latest-new-list div는 부모 <a> 태그에 의해 감싸져 있음
+            parent_link = news_div.parent
+            if not parent_link or parent_link.name != 'a':
+                logger.debug("The Thaiger: latest-new-list의 부모가 링크가 아님")
+                return None
+            
+            # URL과 title 추출
+            url = parent_link.get('href', '')
+            title = parent_link.get('title', '')
+            
+            # title이 없으면 div 내부의 h3에서 추출
+            if not title:
+                h3_element = news_div.find('h3')
+                if h3_element:
+                    title = h3_element.get_text(strip=True)
+            
+            if not title or not url:
+                logger.debug("The Thaiger: 제목 또는 URL 없음")
+                return None
+            
+            # URL 정규화
+            if url.startswith('/'):
+                url = self.base_url + url
+            elif not url.startswith('http'):
+                return None
+            
+            # 유효한 기사 URL인지 확인
+            if not self._is_valid_article_url(url):
+                return None
+            
+            # 요약 생성
+            summary = "Latest news from The Thaiger: {}".format(title[:100])
+            
+            # 날짜 추출 - h_date 클래스에서
+            published_date = datetime.now().isoformat()
+            date_element = news_div.find('span', class_='h_date')
+            if date_element:
+                date_text = date_element.get_text(strip=True)
+                published_date = self._parse_relative_date(date_text)
+            
+            # 이미지 URL 추출 (개선됨)
+            image_url = ''
+            img_element = news_div.find('img')
+            if img_element:
+                # 여러 속성에서 이미지 URL 찾기
+                potential_urls = [
+                    img_element.get('data-src', ''),
+                    img_element.get('src', ''),
+                    img_element.get('data-lazy-src', ''),
+                    img_element.get('data-original', '')
+                ]
+                
+                for img_url in potential_urls:
+                    if img_url and self._is_valid_thethaiger_image(img_url):
+                        image_url = img_url
+                        break
+                
+                # URL 정규화
+                if image_url:
+                    if image_url.startswith('/'):
+                        image_url = self.base_url + image_url
+                    elif not image_url.startswith('http'):
+                        image_url = self.base_url + '/' + image_url
+            
+            # 카테고리 추출 - span 요소에서 찾거나 URL 기반
+            category = 'news'
+            category_span = news_div.find('span')
+            if category_span:
+                category_text = category_span.get_text(strip=True).lower()
+                if 'phuket' in category_text:
+                    category = 'news'
+                elif 'crime' in category_text:
+                    category = 'crime'
+                elif 'business' in category_text:
+                    category = 'business'
+                elif 'travel' in category_text:
+                    category = 'travel'
+            
+            # URL 기반 카테고리도 확인
+            url_category = self._extract_category_from_url_and_content(url, title, summary)
+            if url_category != 'news':
+                category = url_category
+            
+            # 특정 카테고리가 요청된 경우 필터링
+            if (requested_category and requested_category != 'all' and 
+                requested_category != 'news' and category != requested_category):
+                return None
+            
+            return {
+                'title': title,
+                'url': url,
+                'summary': summary,
+                'published_date': published_date,
+                'source': 'The Thaiger',
+                'category': category,
+                'scraped_at': datetime.now().isoformat(),
+                'image_url': image_url
+            }
+            
+        except Exception as e:
+            logger.debug("The Thaiger latest-new-list 파싱 실패: {}".format(e))
+            return None
+
+    def _extract_article_from_post_item(self, post_item, requested_category='all'):
         """post-item에서 개별 기사 정보 추출"""
         try:
             # 제목과 링크: <h2 class="post-title"><a href="...">제목</a></h2>
@@ -157,16 +279,37 @@ class TheThaigerScraper:
                 date_text = date_element.get_text(strip=True)
                 published_date = self._parse_relative_date(date_text)
             
-            # 이미지 URL
-            image_url = None
+            # 이미지 URL (개선됨)
+            image_url = ''
             img_element = post_item.find('img')
             if img_element:
-                image_url = img_element.get('data-src') or img_element.get('src')
-                if image_url and image_url.startswith('/'):
-                    image_url = self.base_url + image_url
+                # 여러 속성에서 이미지 URL 찾기
+                potential_urls = [
+                    img_element.get('data-src', ''),
+                    img_element.get('src', ''),
+                    img_element.get('data-lazy-src', ''),
+                    img_element.get('data-original', '')
+                ]
+                
+                for img_url in potential_urls:
+                    if img_url and self._is_valid_thethaiger_image(img_url):
+                        image_url = img_url
+                        break
+                
+                # URL 정규화
+                if image_url:
+                    if image_url.startswith('/'):
+                        image_url = self.base_url + image_url
+                    elif not image_url.startswith('http'):
+                        image_url = self.base_url + '/' + image_url
             
             # 카테고리 추출
             category = self._extract_category_from_url_and_content(url, title, summary)
+            
+            # 특정 카테고리가 요청된 경우 필터링
+            if (requested_category and requested_category != 'all' and 
+                requested_category != 'news' and category != requested_category):
+                return None
             
             return {
                 'title': title,
@@ -183,7 +326,7 @@ class TheThaigerScraper:
             logger.debug("The Thaiger 기사 파싱 실패: {}".format(e))
             return None
     
-    def _create_article_from_link_data(self, link_data):
+    def _create_article_from_link_data(self, link_data, requested_category='all'):
         """홈페이지 링크 데이터에서 기사 객체 생성"""
         try:
             title = link_data['title']
@@ -210,8 +353,16 @@ class TheThaigerScraper:
             # 날짜는 현재 시간으로 설정 (홈페이지에서는 정확한 날짜 추출이 어려움)
             published_date = datetime.now().isoformat()
             
+            # 이미지 URL (홈페이지에서는 일반적으로 추출하지 않음)
+            image_url = ''
+            
             # 카테고리 추출
             category = self._extract_category_from_url_and_content(url, title, summary)
+            
+            # 특정 카테고리가 요청된 경우 필터링
+            if (requested_category and requested_category != 'all' and 
+                requested_category != 'news' and category != requested_category):
+                return None
             
             return {
                 'title': title,
@@ -221,7 +372,7 @@ class TheThaigerScraper:
                 'source': 'The Thaiger',
                 'category': category,
                 'scraped_at': datetime.now().isoformat(),
-                'image_url': None
+                'image_url': image_url
             }
             
         except Exception as e:
@@ -283,48 +434,124 @@ class TheThaigerScraper:
         except Exception:
             return datetime.now().isoformat()
 
+    def _is_valid_thethaiger_image(self, url: str) -> bool:
+        """TheThaiger 이미지 URL이 유효한지 확인"""
+        if not url:
+            return False
+        
+        # 데이터 URL, blob URL, base64 제외
+        if url.startswith(('data:', 'blob:', '#')):
+            return False
+        
+        url_lower = url.lower()
+        
+        # 제외할 패턴들 - UI 요소만 제외
+        exclude_patterns = [
+            'thethaiger-logo', 'logo-thethaiger', 'logo.png', 'logo.svg',
+            'favicon.ico', 'favicon.png',
+            'icon-', 'sprite-', 'ui-', 'btn-',
+            'avatar-default', 'placeholder-', 'no-image',
+            'loading-', 'spinner-', 'blank.gif',
+            'advertisement', 'ad-banner'
+        ]
+        
+        for pattern in exclude_patterns:
+            if pattern in url_lower:
+                return False
+        
+        # 크기 체크 - 너무 작은 이미지들 제외
+        small_sizes = ['16x16', '24x24', '32x32', '48x48']
+        if any(size in url_lower for size in small_sizes):
+            return False
+        
+        # 유효한 이미지 패턴
+        valid_patterns = [
+            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg',
+            'thethaiger.com',
+            '/image/', '/images/', '/photo/', '/photos/', '/pictures/',
+            '/media/', '/uploads/', '/content/', '/assets/',
+            '/wp-content/', '/files/',
+            'img-', 'photo-', 'picture-', 'image-'
+        ]
+        
+        # 최소 길이 확인
+        if len(url) > 15:
+            return any(pattern in url_lower for pattern in valid_patterns)
+        
+        return False
+
     def _extract_category_from_url_and_content(self, url, title, content):
-        """URL과 내용에서 카테고리 추출"""
+        """URL과 내용에서 카테고리 추출 (표준화됨)"""
         try:
+            if not url:
+                return 'news'
+                
             url_lower = url.lower()
             
-            # URL 기반 카테고리 매핑
-            if '/news/business/' in url_lower:
-                return 'business'
-            elif '/news/national/' in url_lower or '/news/phuket/' in url_lower or '/news/pattaya/' in url_lower:
-                return 'news'
-            elif '/hot-news/crime/' in url_lower:
-                return 'crime'
-            elif '/hot-news/weather/' in url_lower:
-                return 'weather'
-            elif '/guides/best-of/health/' in url_lower:
-                return 'health'
-            elif '/travel/' in url_lower:
-                return 'travel'
-            elif '/video-podcasts/' in url_lower:
-                return 'entertainment'
-            elif '/thai-life/' in url_lower:
-                return 'lifestyle'
+            # 우선순위 기반 카테고리 매핑 (표준 카테고리로 통일)
+            category_patterns = [
+                # 비즈니스/경제 (높은 우선순위)
+                ('/news/business/', 'business'),
+                ('/business/', 'business'),
+                
+                # 스포츠
+                ('/sports/', 'sports'),
+                ('/sport/', 'sports'),
+                
+                # 범죄 -> 뉴스로 분류
+                ('/hot-news/crime/', 'news'),
+                ('/crime/', 'news'),
+                
+                # 날씨 -> 뉴스로 분류
+                ('/hot-news/weather/', 'news'),
+                ('/weather/', 'news'),
+                
+                # 건강
+                ('/guides/best-of/health/', 'health'),
+                ('/health/', 'health'),
+                
+                # 여행 -> 라이프스타일로 분류
+                ('/travel/', 'lifestyle'),
+                
+                # 엔터테인먼트
+                ('/video-podcasts/', 'entertainment'),
+                ('/entertainment/', 'entertainment'),
+                
+                # 라이프스타일
+                ('/thai-life/', 'lifestyle'),
+                ('/lifestyle/', 'lifestyle'),
+                
+                # 지역 뉴스
+                ('/news/national/', 'news'),
+                ('/news/phuket/', 'news'),
+                ('/news/pattaya/', 'news'),
+                ('/hot-news/', 'news'),
+            ]
             
-            # 내용 기반 분류
+            # 우선순위에 따라 매칭
+            for pattern, category in category_patterns:
+                if pattern in url_lower:
+                    return category
+            
+            # 내용 기반 분류 (표준 카테고리로 통일)
             text = "{} {}".format(title, content).lower()
             
             if any(word in text for word in ['business', 'economy', 'trade', 'tourism', 'revenue']):
                 return 'business'
-            elif any(word in text for word in ['crime', 'police', 'arrest', 'shooting']):
-                return 'crime'
-            elif any(word in text for word in ['weather', 'storm', 'rain', 'flood']):
-                return 'weather'
             elif any(word in text for word in ['health', 'medical', 'hospital', 'virus']):
                 return 'health'
-            elif any(word in text for word in ['travel', 'tourism', 'hotel', 'tourist']):
-                return 'travel'
-            elif any(word in text for word in ['video', 'entertainment', 'podcast']):
+            elif any(word in text for word in ['travel', 'hotel', 'tourist', 'vacation']):
+                return 'lifestyle'  # 여행을 라이프스타일로
+            elif any(word in text for word in ['video', 'entertainment', 'podcast', 'movie', 'music']):
                 return 'entertainment'
-            elif any(word in text for word in ['politics', 'government', 'minister']):
+            elif any(word in text for word in ['politics', 'government', 'minister', 'election']):
                 return 'politics'
+            elif any(word in text for word in ['technology', 'tech', 'digital', 'internet']):
+                return 'technology'
+            elif any(word in text for word in ['sports', 'football', 'soccer', 'tennis', 'basketball']):
+                return 'sports'
             
-            return 'news'
+            return 'news'  # 기본값
         except Exception:
             return 'news'
 
@@ -340,6 +567,20 @@ class TheThaigerScraper:
             
         except Exception as e:
             logger.error("The Thaiger 홈페이지 추출 실패: {}".format(e))
+            return []
+    
+    def _get_homepage_articles_with_category(self, limit, category):
+        """홈페이지에서 특정 카테고리 기사 목록 가져오기"""
+        try:
+            logger.info("The Thaiger 홈페이지에서 {} 카테고리 기사 추출".format(category))
+            
+            response = requests.get(self.base_url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+            
+            return self._extract_articles_from_html(response.text, limit, category)
+            
+        except Exception as e:
+            logger.error("The Thaiger 홈페이지 카테고리 추출 실패: {}".format(e))
             return []
     
     def get_latest_news(self, category='news', limit=10):
@@ -370,7 +611,7 @@ class TheThaigerScraper:
             
             if not articles:
                 logger.info("The Thaiger 카테고리 실패, 홈페이지로 폴백")
-                articles = self._get_homepage_articles(limit)
+                articles = self._get_homepage_articles_with_category(limit, category)
             
             logger.info("The Thaiger 카테고리 성공: {}개 기사 반환".format(len(articles)))
             return articles
@@ -399,7 +640,7 @@ class TheThaigerScraper:
                 'source': 'The Thaiger',
                 'category': category,
                 'scraped_at': datetime.now().isoformat(),
-                'image_url': None
+                'image_url': ''
             })
         
         return articles 

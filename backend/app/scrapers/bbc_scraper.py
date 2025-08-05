@@ -3,10 +3,15 @@
 
 import requests
 from bs4 import BeautifulSoup
-from typing import List, Dict
+# from typing import List, Dict
 import logging
 from datetime import datetime, timedelta
 import re
+import feedparser
+try:
+    from urllib.parse import urljoin  # Python 3
+except ImportError:
+    from urlparse import urljoin  # Python 2
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +21,18 @@ class BBCNewsScraper:
         self.search_url = "https://www.bbc.com/search"
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+        # Real BBC RSS feeds for authentic content
+        self.rss_feeds = {
+            'world': 'https://feeds.bbci.co.uk/news/world/rss.xml',
+            'uk': 'https://feeds.bbci.co.uk/news/uk/rss.xml', 
+            'business': 'https://feeds.bbci.co.uk/news/business/rss.xml',
+            'technology': 'https://feeds.bbci.co.uk/news/technology/rss.xml',
+            'health': 'https://feeds.bbci.co.uk/news/health/rss.xml',
+            'science': 'https://feeds.bbci.co.uk/news/science_and_environment/rss.xml',
+            'entertainment': 'https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml',
+            'sports': 'https://feeds.bbci.co.uk/sport/rss.xml?edition=uk',
+            'politics': 'https://feeds.bbci.co.uk/news/politics/rss.xml'
         }
         
     def search_news(self, query, limit=10):
@@ -105,7 +122,7 @@ class BBCNewsScraper:
                     if image_url:
                         if image_url in found_images:
                             # 중복된 이미지는 사용하지 않음
-                            logger.debug(f"BBC 이미지 중복으로 제외: {image_url}")
+                            logger.debug("BBC 이미지 중복으로 제외: {}".format(image_url))
                             image_url = ''
                         else:
                             found_images.add(image_url)
@@ -274,7 +291,7 @@ class BBCNewsScraper:
         
         # 최종 검증: 유효한 이미지 URL이 아니거나 검증 실패시 빈 문자열 반환
         if image_url and not self._is_valid_bbc_image(image_url):
-            logger.debug(f"BBC 이미지 최종 검증 실패: {image_url}")
+            logger.debug("BBC 이미지 최종 검증 실패: {}".format(image_url))
             return ''
             
         return image_url
@@ -302,14 +319,14 @@ class BBCNewsScraper:
         
         for pattern in exclude_patterns:
             if pattern in url_lower:
-                logger.debug(f"BBC 이미지 제외 (패턴 매칭): {pattern} in {url}")
+                logger.debug("BBC 이미지 제외 (패턴 매칭): {} in {}".format(pattern, url))
                 return False
         
         # 데이터 URL, 빈 이미지, SVG 제외
         if (url.startswith('data:') or 
             url.startswith('//') and len(url) < 10 or
             '.svg' in url_lower):
-            logger.debug(f"BBC 이미지 제외 (형식): {url}")
+            logger.debug("BBC 이미지 제외 (형식): {}".format(url))
             return False
         
         # 너무 작은 이미지 크기 제외 (URL에 크기 정보가 있는 경우)
@@ -330,7 +347,7 @@ class BBCNewsScraper:
                         if group and group.isdigit():
                             size = int(group)
                             if size < 200:  # 200px 미만 이미지 제외 (더 엄격하게)
-                                logger.debug(f"BBC 이미지 제외 (크기 작음): {size}px in {url}")
+                                logger.debug("BBC 이미지 제외 (크기 작음): {}px in {}".format(size, url))
                                 return False
                             break
                 except:
@@ -354,11 +371,11 @@ class BBCNewsScraper:
         is_valid = has_valid_extension and (has_bbc_domain or has_content_keyword)
         
         if not is_valid:
-            logger.debug(f"BBC 이미지 제외 (검증 실패): ext={has_valid_extension}, domain={has_bbc_domain}, content={has_content_keyword}, url={url}")
+            logger.debug("BBC 이미지 제외 (검증 실패): ext={}, domain={}, content={}, url={}".format(has_valid_extension, has_bbc_domain, has_content_keyword, url))
         
         return is_valid
     
-    def _extract_bbc_summary(self, parent_element, article_url: str) -> str:
+    def _extract_bbc_summary(self, parent_element, article_url):
         """BBC 기사에서 본문 요약 추출 (강화된 버전)"""
         summary = ''
         
@@ -417,7 +434,7 @@ class BBCNewsScraper:
         
         return summary
     
-    def _extract_summary_from_article_page(self, article_url: str) -> str:
+    def _extract_summary_from_article_page(self, article_url):
         """실제 BBC 기사 페이지에서 본문 추출"""
         try:
             response = requests.get(article_url, headers=self.headers, timeout=5)
@@ -735,7 +752,7 @@ class BBCNewsScraper:
                         if image_url:
                             if image_url in found_images:
                                 # 중복된 이미지는 사용하지 않음
-                                logger.debug(f"BBC 카테고리 이미지 중복으로 제외: {image_url}")
+                                logger.debug("BBC 카테고리 이미지 중복으로 제외: {}".format(image_url))
                                 image_url = ''
                             else:
                                 found_images.add(image_url)
@@ -758,29 +775,31 @@ class BBCNewsScraper:
                         articles.append(article)
                         
                 except Exception as e:
-                    logger.debug(f"BBC 카테고리 파싱 오류 (selector: {selector}): {e}")
+                    logger.debug("BBC 카테고리 파싱 오류 (selector: {}): {}".format(selector, e))
                     continue
                     
         except Exception as e:
-            logger.error(f"BBC 카테고리 페이지 파싱 실패: {e}")
+            logger.error("BBC 카테고리 페이지 파싱 실패: {}".format(e))
         
-        logger.info(f"BBC {category} 카테고리에서 {len(articles)}개 기사 추출")
+        logger.info("BBC {} 카테고리에서 {}개 기사 추출".format(category, len(articles)))
         return articles[:limit]
     
     def get_latest_news(self, category='news', limit=10):
-        """BBC의 실제 카테고리 섹션에서 뉴스 가져오기 - 실제 웹사이트 구조에 맞게 개선"""
+        """BBC RSS feeds를 사용하여 실제 뉴스 가져오기"""
         try:
-            print(f"=== BBC get_latest_news 시작 - category: {category}, limit: {limit} ===")
-            logger.error(f"=== BBC get_latest_news ERROR 레벨 로그 - category: {category}, limit: {limit} ===")
-            logger.info(f"BBC get_latest_news 호출됨 - category: {category}, limit: {limit}")
-            logger.info(f"BBC 실제 카테고리별 뉴스 요청: {category}")
+            logger.info("BBC RSS 기반 뉴스 요청: {}, limit: {}".format(category, limit))
             
-            # health와 sports 카테고리는 바로 검색 모드 사용
+            # RSS feeds에서 기사 가져오기 (우선순위)
+            rss_articles = self._get_rss_articles(category, limit)
+            if rss_articles:
+                logger.info("BBC RSS에서 {}개 기사 추출".format(len(rss_articles)))
+                return rss_articles
+            
+            # RSS 실패시 기존 방식 폴백
+            logger.info("BBC RSS 실패, 기존 방식으로 폴백")
             if category == 'health':
-                logger.info("BBC health 카테고리 - 직접 검색 모드 사용")
                 return self.search_news('health medical NHS hospital doctor', limit)
             elif category in ['sport', 'sports']:
-                logger.info("BBC sport 카테고리 - 직접 검색 모드 사용")
                 return self.search_news('football premier league cricket rugby tennis sport', limit)
             
             # 실제 BBC 카테고리 섹션 URL들 (2025년 기준)
@@ -803,26 +822,26 @@ class BBCNewsScraper:
             }
             
             url = category_urls.get(category, category_urls['news'])
-            print(f"=== BBC URL 접근: {url} ===")
-            logger.error(f"=== BBC URL 접근 ERROR 로그: {url} ===")
-            logger.info(f"BBC 카테고리 페이지 접근: {url}")
+            print("=== BBC URL 접근: {} ===".format(url))
+            logger.error("=== BBC URL 접근 ERROR 로그: {} ===".format(url))
+            logger.info("BBC 카테고리 페이지 접근: {}".format(url))
             
             response = requests.get(url, headers=self.headers, timeout=15)
             response.raise_for_status()
-            print(f"=== BBC 응답 성공: 상태코드 {response.status_code} ===")
+            print("=== BBC 응답 성공: 상태코드 {} ===".format(response.status_code))
             
             # 실제 웹사이트 구조에 맞게 기사 추출
-            print(f"=== BBC _extract_bbc_category_articles 호출 시작 ===")
+            print("=== BBC _extract_bbc_category_articles 호출 시작 ===")
             articles = self._extract_bbc_category_articles(response.text, limit, category)
-            print(f"=== BBC _extract_bbc_category_articles 결과: {len(articles) if articles else 0}개 ===")
+            print("=== BBC _extract_bbc_category_articles 결과: {}개 ===".format(len(articles) if articles else 0))
             
             if articles:
-                logger.info(f"BBC {category} 카테고리에서 {len(articles)}개 기사 추출")
+                logger.info("BBC {} 카테고리에서 {}개 기사 추출".format(category, len(articles)))
                 return articles
             else:
                 # 폴백: 검색 사용
-                print(f"=== BBC 폴백 검색 시작 ===")
-                logger.info(f"BBC {category} 카테고리 추출 실패, 검색으로 폴백")
+                print("=== BBC 폴백 검색 시작 ===")
+                logger.info("BBC {} 카테고리 추출 실패, 검색으로 폴백".format(category))
                 fallback_keywords = {
                     'sports': 'football premier league',
                     'sport': 'football premier league',
@@ -840,39 +859,39 @@ class BBCNewsScraper:
                 }
                 
                 keyword = fallback_keywords.get(category, 'breaking news')
-                logger.info(f"BBC 검색 폴백: {category} -> {keyword}")
+                logger.info("BBC 검색 폴백: {} -> {}".format(category, keyword))
                 
                 return self.search_news(keyword, limit)
             
         except Exception as e:
-            print(f"=== BBC Exception 발생: {e} ===")
-            logger.error(f"BBC 카테고리별 뉴스 가져오기 실패: {e}")
+            print("=== BBC Exception 발생: {} ===".format(e))
+            logger.error("BBC 카테고리별 뉴스 가져오기 실패: {}".format(e))
             # 최종 폴백: 검색 사용
-            print(f"=== BBC 최종 폴백 검색 시작 ===")
+            print("=== BBC 최종 폴백 검색 시작 ===")
             return self.search_news('breaking news', limit)
     
-    def _extract_bbc_category_articles(self, html_content: str, limit: int, category: str) -> List[Dict]:
+    def _extract_bbc_category_articles(self, html_content, limit, category):
         """BBC 카테고리 페이지에서 기사 추출 - 실제 구조 분석 기반 (스포츠 JSON 포함)"""
         articles = []
         
         try:
-            logger.info(f"BBC _extract_bbc_category_articles 호출됨 - category: {category}, limit: {limit}")
+            logger.info("BBC _extract_bbc_category_articles 호출됨 - category: {}, limit: {}".format(category, limit))
             
             # BBC Sport 페이지는 JSON 구조이므로 별도 처리
-            print(f"=== 카테고리 확인: '{category}' in ['sport', 'sports'] = {category in ['sport', 'sports']} ===")
+            print("=== 카테고리 확인: '{}' in ['sport', 'sports'] = {} ===".format(category, category in ['sport', 'sports']))
             if category in ['sport', 'sports']:
-                print(f"=== BBC Sport JSON 분기 진입 ===")
+                print("=== BBC Sport JSON 분기 진입 ===")
                 logger.info("BBC Sport JSON 구조 파싱 시작")
                 sport_articles = self._extract_bbc_sport_json(html_content, limit)
-                print(f"=== BBC Sport JSON 결과: {len(sport_articles) if sport_articles else 0}개 ===")
+                print("=== BBC Sport JSON 결과: {}개 ===".format(len(sport_articles) if sport_articles else 0))
                 if sport_articles:
-                    logger.info(f"BBC Sport JSON에서 {len(sport_articles)}개 기사 추출")
+                    logger.info("BBC Sport JSON에서 {}개 기사 추출".format(len(sport_articles)))
                     return sport_articles
                 else:
-                    print(f"=== BBC Sport JSON 파싱 실패, 일반 파싱으로 폴백 ===")
+                    print("=== BBC Sport JSON 파싱 실패, 일반 파싱으로 폴백 ===")
                     logger.info("BBC Sport JSON 파싱 실패, 일반 파싱으로 폴백")
             else:
-                print(f"=== BBC Sport JSON 분기 건너뜀 - 일반 파싱 실행 ===")
+                print("=== BBC Sport JSON 분기 건너뜀 - 일반 파싱 실행 ===")
             
             soup = BeautifulSoup(html_content, 'html.parser')
             
@@ -922,7 +941,7 @@ class BBCNewsScraper:
             for selector in article_selectors:
                 try:
                     links = soup.select(selector)
-                    logger.debug(f"BBC {selector}: {len(links)}개 링크 발견")
+                    logger.debug("BBC {}: {}개 링크 발견".format(selector, len(links)))
                     
                     for link in links:
                         try:
@@ -1000,14 +1019,14 @@ class BBCNewsScraper:
                                 break
                                 
                         except Exception as e:
-                            logger.debug(f"BBC 개별 기사 처리 실패: {e}")
+                            logger.debug("BBC 개별 기사 처리 실패: {}".format(e))
                             continue
                     
                     if len(articles) >= limit:
                         break
                         
                 except Exception as e:
-                    logger.debug(f"BBC selector {selector} 처리 실패: {e}")
+                    logger.debug("BBC selector {} 처리 실패: {}".format(selector, e))
                     continue
             
             # 3. HTML에서 충분한 기사를 못 찾은 경우 JSON 보조 사용
@@ -1020,14 +1039,14 @@ class BBCNewsScraper:
                         found_urls.add(json_article['url'])
                         found_titles.add(json_article['title'].lower())
                         
-                logger.info(f"BBC JSON 백업에서 {len(json_articles)}개 추가 기사 추출")
+                logger.info("BBC JSON 백업에서 {}개 추가 기사 추출".format(len(json_articles)))
                     
         except Exception as e:
-            logger.error(f"BBC 카테고리 HTML 파싱 실패: {e}")
+            logger.error("BBC 카테고리 HTML 파싱 실패: {}".format(e))
         
         return articles[:limit]
     
-    def _extract_bbc_json_articles(self, html_content: str, limit: int) -> List[Dict]:
+    def _extract_bbc_json_articles(self, html_content, limit):
         """BBC 페이지의 JSON 데이터에서 헤드라이너 기사 추출"""
         articles = []
         
@@ -1042,7 +1061,7 @@ class BBCNewsScraper:
                 r'"content":\s*(\[.*?\])',
                 r'"articles":\s*(\[.*?\])',
                 r'"title":\s*"([^"]*Syria[^"]*)"',  # 시리아 관련 헤드라이너
-                r'"href":\s*"([^"]*news/articles/[^"]*)"'
+                r'"hre":\s*"([^"]*news/articles/[^"]*)"'
             ]
             
             # JSON 데이터에서 기사 정보 추출
@@ -1064,10 +1083,10 @@ class BBCNewsScraper:
                                         articles.extend(self._parse_bbc_json_item(item))
                         elif 'syria' in match.lower() or 'druze' in match.lower():
                             # 시리아/드루즈 관련 헤드라이너 직접 추출
-                            logger.info(f"BBC 시리아 헤드라이너 발견: {match}")
+                            logger.info("BBC 시리아 헤드라이너 발견: {}".format(match))
                             
                     except (json.JSONDecodeError, KeyError, TypeError) as e:
-                        logger.debug(f"BBC JSON 파싱 실패: {e}")
+                        logger.debug("BBC JSON 파싱 실패: {}".format(e))
                         continue
             
             # 페이지 텍스트에서 다양한 헤드라이너 찾기 (특정 키워드 제한 없이)
@@ -1094,23 +1113,10 @@ class BBCNewsScraper:
                         
                         seen_headlines.add(title.lower())
                         
-                        # URL 추정 (실제 BBC URL 패턴 기반)
-                        url_suffix = re.sub(r'[^a-zA-Z0-9\s]', '', title.lower())[:50]
-                        url_suffix = re.sub(r'\s+', '-', url_suffix)
-                        
-                        article = {
-                            'title': title,
-                            'url': f'https://www.bbc.com/news/articles/{url_suffix}-{datetime.now().strftime("%Y%m%d")}',
-                            'summary': f"Latest news update: {title[:100]}...",
-                            'published_date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
-                            'source': 'BBC News',
-                            'category': self._extract_category_from_content(title, '', ''),
-                            'scraped_at': datetime.now().isoformat(),
-                            'relevance_score': 1,
-                            'image_url': ''
-                        }
+                        # Skip fake URL generation - use RSS feeds instead
+                        continue
                         articles.append(article)
-                        logger.info(f"BBC 헤드라이너 추출: {title}")
+                        logger.info("BBC 헤드라이너 추출: {}".format(title))
                         
                         if len(articles) >= limit:
                             break
@@ -1119,11 +1125,11 @@ class BBCNewsScraper:
                     break
                         
         except Exception as e:
-            logger.debug(f"BBC JSON 추출 실패: {e}")
+            logger.debug("BBC JSON 추출 실패: {}".format(e))
         
         return articles[:limit]
     
-    def _parse_bbc_json_structure(self, data: dict, limit: int) -> List[Dict]:
+    def _parse_bbc_json_structure(self, data, limit):
         """BBC JSON 구조에서 기사 정보 파싱"""
         articles = []
         
@@ -1148,11 +1154,11 @@ class BBCNewsScraper:
                                             articles.append(article)
                                             
         except Exception as e:
-            logger.debug(f"BBC JSON 구조 파싱 실패: {e}")
+            logger.debug("BBC JSON 구조 파싱 실패: {}".format(e))
         
         return articles
     
-    def _parse_bbc_json_item(self, item: dict) -> Dict:
+    def _parse_bbc_json_item(self, item):
         """BBC JSON 아이템에서 기사 정보 추출"""
         try:
             title = item.get('title', '')
@@ -1179,11 +1185,11 @@ class BBCNewsScraper:
                 }
                 
         except Exception as e:
-            logger.debug(f"BBC JSON 아이템 파싱 실패: {e}")
+            logger.debug("BBC JSON 아이템 파싱 실패: {}".format(e))
         
         return None
     
-    def _extract_bbc_summary(self, element, title: str) -> str:
+    def _extract_bbc_summary(self, element, title):
         """BBC 기사에서 요약 추출"""
         summary = ''
         
@@ -1221,11 +1227,11 @@ class BBCNewsScraper:
                         break
                         
         except Exception as e:
-            logger.debug(f"BBC 요약 추출 실패: {e}")
+            logger.debug("BBC 요약 추출 실패: {}".format(e))
         
         return summary
     
-    def _extract_bbc_date_improved(self, element, url: str) -> str:
+    def _extract_bbc_date_improved(self, element, url):
         """BBC 기사에서 날짜 추출 - 개선된 버전"""
         try:
             # 1. 요소에서 날짜 찾기
@@ -1286,11 +1292,11 @@ class BBCNewsScraper:
                         continue
                         
         except Exception as e:
-            logger.debug(f"BBC 날짜 추출 실패: {e}")
+            logger.debug("BBC 날짜 추출 실패: {}".format(e))
         
         return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
     
-    def _extract_bbc_category_from_url(self, url: str) -> str:
+    def _extract_bbc_category_from_url(self, url):
         """BBC URL에서 카테고리 추출"""
         try:
             if '/sport/' in url:
@@ -1318,7 +1324,7 @@ class BBCNewsScraper:
         except:
             return 'news' 
 
-    def _extract_bbc_sport_json(self, html_content: str, limit: int) -> List[Dict]:
+    def _extract_bbc_sport_json(self, html_content, limit):
         """BBC Sport 페이지의 JSON 구조에서 기사 추출"""
         articles = []
         
@@ -1326,7 +1332,7 @@ class BBCNewsScraper:
             import json
             import re
             
-            print(f"=== BBC Sport JSON 파싱 시작 - HTML 길이: {len(html_content)} ===")
+            print("=== BBC Sport JSON 파싱 시작 - HTML 길이: {} ===".format(len(html_content)))
             
             # BBC Sport 페이지에서 실제 스포츠 기사 링크들을 찾는 패턴들
             sport_patterns = [
@@ -1344,9 +1350,9 @@ class BBCNewsScraper:
             
             # 각 패턴으로 기사 추출
             for i, pattern in enumerate(sport_patterns):
-                print(f"=== BBC Sport 패턴 {i+1} 시도 ===")
+                print("=== BBC Sport 패턴 {} 시도 ===".format(i+1))
                 matches = re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE)
-                print(f"=== BBC Sport 패턴 {i+1} 매칭 결과: {len(matches)}개 ===")
+                print("=== BBC Sport 패턴 {} 매칭 결과: {}개 ===".format(i+1, len(matches)))
                 
                 for match in matches:
                     try:
@@ -1400,7 +1406,7 @@ class BBCNewsScraper:
                         article = {
                             'title': title,
                             'url': url,
-                            'summary': f"BBC Sport: {title[:150]}",
+                            'summary': "BBC Sport: {}".format(title[:150]),
                             'published_date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
                             'source': 'BBC News',
                             'category': 'sports',
@@ -1410,13 +1416,13 @@ class BBCNewsScraper:
                         }
                         
                         articles.append(article)
-                        print(f"=== BBC Sport 기사 추가: {title[:50]}... ===")
+                        print("=== BBC Sport 기사 추가: {}... ===".format(title[:50]))
                         
                         if len(articles) >= limit:
                             break
                             
                     except Exception as e:
-                        logger.debug(f"BBC Sport 기사 처리 실패: {e}")
+                        logger.debug("BBC Sport 기사 처리 실패: {}".format(e))
                         continue
                 
                 if len(articles) >= limit:
@@ -1424,16 +1430,16 @@ class BBCNewsScraper:
             
             # 충분한 기사를 찾지 못했을 경우 HTML 파싱 시도
             if len(articles) < limit:
-                logger.info(f"BBC Sport JSON에서 {len(articles)}개만 찾음, HTML 파싱 시도")
+                logger.info("BBC Sport JSON에서 {}개만 찾음, HTML 파싱 시도".format(len(articles)))
                 html_articles = self._extract_bbc_sport_fallback(html_content, limit - len(articles), found_titles, found_urls)
                 articles.extend(html_articles)
                 
         except Exception as e:
-            logger.error(f"BBC Sport JSON 파싱 실패: {e}")
+            logger.error("BBC Sport JSON 파싱 실패: {}".format(e))
         
         return articles
     
-    def _extract_bbc_sport_fallback(self, html_content: str, limit: int, found_titles: set, found_urls: set) -> List[Dict]:
+    def _extract_bbc_sport_fallback(self, html_content, limit, found_titles, found_urls):
         """BBC Sport 페이지에서 폴백 방식으로 추가 기사 추출"""
         articles = []
         
@@ -1444,7 +1450,7 @@ class BBCNewsScraper:
             fallback_patterns = [
                 # 실제 기사 URL 패턴들
                 r'"text":\s*"([^"]{20,120}[a-z]{3,}[^"]*)".*?"url":\s*"([^"]*sport/[^"]*articles/[^"]*)"',
-                r'"label":\s*"([^"]{20,120}[a-z]{3,}[^"]*)".*?"href":\s*"([^"]*sport/[^"]*articles/[^"]*)"',
+                r'"label":\s*"([^"]{20,120}[a-z]{3,}[^"]*)".*?"hre":\s*"([^"]*sport/[^"]*articles/[^"]*)"',
                 r'"name":\s*"([^"]{20,120}[a-z]{3,}[^"]*)".*?"url":\s*"([^"]*sport/[^"]*articles/[^"]*)"',
                 # 더 구체적인 스포츠 기사들
                 r'<h[2-4][^>]*>([^<]{20,120})</h[2-4]>.*?href="([^"]*sport/[^"]*articles/[^"]*)"',
@@ -1496,7 +1502,7 @@ class BBCNewsScraper:
                         article = {
                             'title': title,
                             'url': url,
-                            'summary': f"BBC Sport coverage: {title[:150]}",
+                            'summary': "BBC Sport coverage: {}".format(title[:150]),
                             'published_date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
                             'source': 'BBC Sport',
                             'category': 'sports',
@@ -1506,34 +1512,35 @@ class BBCNewsScraper:
                         }
                         
                         articles.append(article)
-                        logger.info(f"BBC Sport 폴백 기사 추출: {title}")
+                        logger.info("BBC Sport 폴백 기사 추출: {}".format(title))
                         
                         if len(articles) >= limit:
                             break
                             
                     except Exception as e:
-                        logger.debug(f"BBC Sport 폴백 기사 처리 실패: {e}")
+                        logger.debug("BBC Sport 폴백 기사 처리 실패: {}".format(e))
                         continue
                         
                 if len(articles) >= limit:
                     break
                     
         except Exception as e:
-            logger.debug(f"BBC Sport 폴백 파싱 실패: {e}")
+            logger.debug("BBC Sport 폴백 파싱 실패: {}".format(e))
         
         return articles
     
-    def _extract_bbc_sport_summary(self, html_content: str, title: str, url: str) -> str:
+    def _extract_bbc_sport_summary(self, html_content, title, url):
         """BBC Sport 기사의 요약 추출"""
         try:
             import re
             
             # JSON에서 해당 기사의 요약 찾기
             title_escaped = re.escape(title)
+            url_escaped = re.escape(url)
             summary_patterns = [
-                rf'{title_escaped}.*?"description":\s*"([^"]+)"',
-                rf'{title_escaped}.*?"summary":\s*"([^"]+)"',
-                rf'"url":\s*"{re.escape(url)}".*?"description":\s*"([^"]+)"'
+                title_escaped + r'.*?"description":\s*"([^"]+)"',
+                title_escaped + r'.*?"summary":\s*"([^"]+)"',
+                r'"url":\s*"' + url_escaped + r'".*?"description":\s*"([^"]+)"'
             ]
             
             for pattern in summary_patterns:
@@ -1544,11 +1551,11 @@ class BBCNewsScraper:
                         return summary
                         
         except Exception as e:
-            logger.debug(f"BBC Sport 요약 추출 실패: {e}")
+            logger.debug("BBC Sport 요약 추출 실패: {}".format(e))
         
-        return f"BBC Sport latest update on {title[:100]}"
+        return "BBC Sport latest update on {}".format(title[:100])
     
-    def _extract_bbc_sport_image(self, html_content: str, url: str) -> str:
+    def _extract_bbc_sport_image(self, html_content, url):
         """BBC Sport 기사의 이미지 추출"""
         try:
             import re
@@ -1556,9 +1563,9 @@ class BBCNewsScraper:
             # JSON에서 해당 기사의 이미지 찾기
             url_escaped = re.escape(url)
             image_patterns = [
-                rf'"url":\s*"{url_escaped}".*?"src":\s*"([^"]*ichef\.bbci\.co\.uk[^"]*)"',
-                rf'"url":\s*"{url_escaped}".*?"image":\s*{{[^}}]*"src":\s*"([^"]*)"',
-                rf'"src":\s*"([^"]*ichef\.bbci\.co\.uk[^"]*)"'
+                r'"url":\s*"' + url_escaped + r'".*?"src":\s*"([^"]*ichef\.bbci\.co\.uk[^"]*)"',
+                r'"url":\s*"' + url_escaped + r'".*?"image":\s*{[^}]*"src":\s*"([^"]*)"',
+                r'"src":\s*"([^"]*ichef\.bbci\.co\.uk[^"]*)"'
             ]
             
             for pattern in image_patterns:
@@ -1574,6 +1581,242 @@ class BBCNewsScraper:
                         return image_url
                         
         except Exception as e:
-            logger.debug(f"BBC Sport 이미지 추출 실패: {e}")
+            logger.debug("BBC Sport 이미지 추출 실패: {}".format(e))
         
-        return '' 
+        return ''
+    
+    def _get_rss_articles(self, category, limit):
+        """BBC RSS feeds에서 실제 기사 추출"""
+        articles = []
+        
+        try:
+            # 카테고리에 따라 RSS feed 선택
+            feed_urls = []
+            
+            if category in ['news', 'all']:
+                feed_urls = [self.rss_feeds['world'], self.rss_feeds['uk']]
+            elif category in ['sport', 'sports']:
+                feed_urls = [self.rss_feeds['sports']]
+            elif category == 'business':
+                feed_urls = [self.rss_feeds['business']]
+            elif category in ['technology', 'tech']:
+                feed_urls = [self.rss_feeds['technology']]
+            elif category == 'health':
+                feed_urls = [self.rss_feeds['health']]
+            elif category == 'science':
+                feed_urls = [self.rss_feeds['science']]
+            elif category == 'entertainment':
+                feed_urls = [self.rss_feeds['entertainment']]
+            elif category == 'politics':
+                feed_urls = [self.rss_feeds['politics']]
+            else:
+                feed_urls = [self.rss_feeds['world'], self.rss_feeds['uk']]
+            
+            seen_urls = set()
+            
+            for feed_url in feed_urls:
+                try:
+                    logger.info("BBC RSS feed 액세스: {}".format(feed_url))
+                    feed = feedparser.parse(feed_url)
+                    
+                    if feed.entries:
+                        logger.info("BBC RSS에서 {}개 엔트리 발견".format(len(feed.entries)))
+                        
+                        for entry in feed.entries:
+                            if len(articles) >= limit:
+                                break
+                                
+                            try:
+                                # RSS 엔트리에서 데이터 추출
+                                title = entry.title.strip() if hasattr(entry, 'title') else ''
+                                url = entry.link.strip() if hasattr(entry, 'link') else ''
+                                summary = self._extract_rss_summary(entry)
+                                published_date = self._extract_rss_date(entry)
+                                image_url = self._extract_rss_image(entry)
+                                
+                                # 기본 검증
+                                if not title or len(title) < 10 or not url:
+                                    continue
+                                    
+                                # URL 검증 및 중복 방지
+                                if not self._is_valid_bbc_url(url) or url in seen_urls:
+                                    continue
+                                    
+                                seen_urls.add(url)
+                                
+                                # 카테고리 추출
+                                article_category = self._extract_category_from_content(title, summary, url)
+                                
+                                article = {
+                                    'title': title,
+                                    'url': url,
+                                    'summary': summary[:300] if summary else title[:200],
+                                    'published_date': published_date,
+                                    'source': 'BBC News',
+                                    'category': article_category,
+                                    'scraped_at': datetime.now().isoformat(),
+                                    'relevance_score': 1,
+                                    'image_url': image_url
+                                }
+                                
+                                articles.append(article)
+                                logger.info("BBC RSS 기사 추가: {}".format(title))
+                                
+                            except Exception as e:
+                                logger.debug("BBC RSS 엔트리 처리 실패: {}".format(e))
+                                continue
+                    else:
+                        logger.warning("BBC RSS feed 비어있음: {}".format(feed_url))
+                        
+                except Exception as e:
+                    logger.error("BBC RSS feed 액세스 실패 {}: {}".format(feed_url, e))
+                    continue
+                    
+                if len(articles) >= limit:
+                    break
+                    
+        except Exception as e:
+            logger.error("BBC RSS 처리 실패: {}".format(e))
+            
+        return articles[:limit]
+    
+    def _extract_rss_summary(self, entry):
+        """RSS 엔트리에서 요약 추출"""
+        try:
+            # RSS 요약 필드들 확인
+            if hasattr(entry, 'summary') and entry.summary:
+                summary = BeautifulSoup(entry.summary, 'html.parser').get_text(strip=True)
+                if len(summary) > 20:
+                    return summary
+                    
+            if hasattr(entry, 'description') and entry.description:
+                description = BeautifulSoup(entry.description, 'html.parser').get_text(strip=True)
+                if len(description) > 20:
+                    return description
+                    
+            # content 필드 확인
+            if hasattr(entry, 'content') and entry.content:
+                for content in entry.content:
+                    if hasattr(content, 'value'):
+                        content_text = BeautifulSoup(content.value, 'html.parser').get_text(strip=True)
+                        if len(content_text) > 20:
+                            return content_text[:300]
+                            
+        except Exception as e:
+            logger.debug("BBC RSS 요약 추출 실패: {}".format(e))
+            
+        return ''
+    
+    def _extract_rss_date(self, entry):
+        """RSS 엔트리에서 날짜 추출"""
+        try:
+            # published 날짜 확인
+            if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                date_obj = datetime(*entry.published_parsed[:6])
+                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                
+            if hasattr(entry, 'published') and entry.published:
+                # RFC 2822 형식으로 파싱 시도
+                try:
+                    from email.utils import parsedate_tz
+                    parsed = parsedate_tz(entry.published)
+                    if parsed:
+                        date_obj = datetime(*parsed[:6])
+                        return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                except:
+                    pass
+                    
+            # updated 날짜 확인
+            if hasattr(entry, 'updated_parsed') and entry.updated_parsed:
+                date_obj = datetime(*entry.updated_parsed[:6])
+                return date_obj.strftime('%a, %d %b %Y %H:%M:%S GMT')
+                
+        except Exception as e:
+            logger.debug("BBC RSS 날짜 추출 실패: {}".format(e))
+            
+        return datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    
+    def _extract_rss_image(self, entry):
+        """RSS 엔트리에서 이미지 URL 추출"""
+        try:
+            # enclosures에서 이미지 찾기
+            if hasattr(entry, 'enclosures'):
+                for enclosure in entry.enclosures:
+                    if hasattr(enclosure, 'type') and enclosure.type and 'image' in enclosure.type:
+                        if hasattr(enclosure, 'href') and self._is_valid_bbc_image(enclosure.href):
+                            return enclosure.href
+                            
+            # media_thumbnail 확인
+            if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
+                for thumbnail in entry.media_thumbnail:
+                    if isinstance(thumbnail, dict) and 'url' in thumbnail:
+                        if self._is_valid_bbc_image(thumbnail['url']):
+                            return thumbnail['url']
+                            
+            # media_content 확인
+            if hasattr(entry, 'media_content') and entry.media_content:
+                for media in entry.media_content:
+                    if isinstance(media, dict) and 'url' in media:
+                        if media.get('type', '').startswith('image/'):
+                            if self._is_valid_bbc_image(media['url']):
+                                return media['url']
+                                
+            # RSS 내용에서 이미지 태그 찾기
+            content_fields = []
+            if hasattr(entry, 'summary'):
+                content_fields.append(entry.summary)
+            if hasattr(entry, 'content'):
+                for content in entry.content:
+                    if hasattr(content, 'value'):
+                        content_fields.append(content.value)
+                        
+            for content in content_fields:
+                try:
+                    soup = BeautifulSoup(content, 'html.parser')
+                    img_tags = soup.find_all('img')
+                    for img in img_tags:
+                        src = img.get('src', '')
+                        if src and self._is_valid_bbc_image(src):
+                            # 상대 URL을 절대 URL로 변환
+                            if src.startswith('//'):
+                                return 'https:' + src
+                            elif src.startswith('/'):
+                                return 'https://www.bbc.com' + src
+                            elif src.startswith('http'):
+                                return src
+                except:
+                    continue
+                    
+        except Exception as e:
+            logger.debug("BBC RSS 이미지 추출 실패: {}".format(e))
+            
+        return ''
+    
+    def _is_valid_bbc_url(self, url):
+        """BBC URL이 유효한지 검증"""
+        try:
+            if not url or 'bbc.com' not in url.lower():
+                return False
+                
+            # 제외할 URL 패턴들
+            exclude_patterns = [
+                '/search', '/contact', '/help', '/about', '/terms',
+                '/privacy', '/cookies', '/accessibility', '/iplayer', 
+                '/sounds', '/weather', '/sport/live', '/news/live'
+            ]
+            
+            for pattern in exclude_patterns:
+                if pattern in url.lower():
+                    return False
+                    
+            # 실제 기사 URL 패턴 확인
+            valid_patterns = [
+                '/news/', '/sport/', '/business/', '/technology/',
+                '/innovation/', '/culture/', '/health/', '/science-environment/'
+            ]
+            
+            return any(pattern in url.lower() for pattern in valid_patterns)
+            
+        except Exception as e:
+            logger.debug("BBC URL 검증 실패: {}".format(e))
+            return False 

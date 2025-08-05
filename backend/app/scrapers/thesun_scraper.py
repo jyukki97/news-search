@@ -693,8 +693,14 @@ class TheSunScraper:
                         # 카테고리 추출
                         category = self._extract_thesun_category_from_url(url)
                         
+                        # 이미지 추출 시도 (Google 검색 결과에서)
+                        image_url = self._extract_image_from_google_result(context, url)
+                        
                         # 날짜 (현재 시간 사용)
                         published_date = datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+                        
+                        # 이미지가 없으면 폴백 사용
+                        final_image_url = image_url if image_url else self._get_fallback_image_url(category, url)
                         
                         article = {
                             'title': title,
@@ -705,7 +711,7 @@ class TheSunScraper:
                             'category': category,
                             'scraped_at': datetime.now().isoformat(),
                             'relevance_score': 1,
-                            'image_url': ''
+                            'image_url': final_image_url
                         }
                         
                         articles.append(article)
@@ -724,4 +730,155 @@ class TheSunScraper:
         except Exception as e:
             logger.error(f"Google 검색 결과 파싱 실패: {e}")
         
-        return articles[:limit] 
+        return articles[:limit]
+    
+    def _extract_image_from_google_result(self, context, article_url: str) -> str:
+        """Google 검색 결과에서 The Sun 이미지 추출 - 개선된 로직"""
+        try:
+            # 실제 The Sun 페이지에서 이미지 추출을 우선시 (더 정확한 이미지)
+            page_image = self._fetch_image_from_thesun_page(article_url)
+            if page_image and not self._is_default_icon(page_image):
+                return page_image
+                
+            # Google 검색 결과에서 이미지 찾기 (폴백)
+            if hasattr(context, 'find_all'):
+                img_elements = context.find_all('img')
+                
+                for img in img_elements:
+                    # 다양한 이미지 속성에서 URL 추출
+                    for attr in ['src', 'data-src', 'data-lazy-src', 'data-original']:
+                        img_src = img.get(attr, '')
+                        if img_src and self._is_valid_thesun_image(img_src) and not self._is_default_icon(img_src):
+                            return self._normalize_image_url(img_src)
+                
+        except Exception as e:
+            logger.debug(f"Google 결과에서 이미지 추출 실패: {e}")
+        
+        return ''
+    
+    def _is_valid_thesun_image(self, img_src: str) -> bool:
+        """The Sun 이미지 URL이 유효한지 확인"""
+        if not img_src:
+            return False
+            
+        # 유효한 이미지 확장자 확인
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif']
+        if not any(ext in img_src.lower() for ext in valid_extensions):
+            return False
+            
+        # The Sun 이미지 도메인 확인 또는 외부 뉴스 이미지
+        valid_domains = ['thesun.co.uk', 'news.', 'static.', 'cdn.', 'media.']
+        if any(domain in img_src.lower() for domain in valid_domains):
+            return True
+            
+        # 상대 경로이거나 기본 이미지 서비스인 경우
+        if img_src.startswith('/') or img_src.startswith('//'):
+            return True
+            
+        return False
+    
+    def _normalize_image_url(self, img_src: str) -> str:
+        """이미지 URL 정규화"""
+        if img_src.startswith('//'):
+            return 'https:' + img_src
+        elif img_src.startswith('/'):
+            return 'https://www.thesun.co.uk' + img_src
+        return img_src
+    
+    def _fetch_image_from_thesun_page(self, article_url: str) -> str:
+        """The Sun 기사 페이지에서 직접 이미지 추출 - 개선된 로직"""
+        try:
+            # 실제 뉴스 기사 URL인지 확인
+            if not self._is_real_news_url(article_url):
+                return ''
+                
+            response = requests.get(article_url, headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # The Sun 페이지에서 메인 이미지 찾기 - 우선순위 순서
+                img_selectors = [
+                    'meta[property="og:image"]',  # Open Graph 이미지 (최우선)
+                    'meta[name="twitter:image"]',  # Twitter 카드 이미지
+                    'article img[src*="thesun"]',  # 기사 내 The Sun 이미지
+                    '.article-hero img',
+                    '.article-image img', 
+                    '.post-content img',
+                    'img[class*="hero"]',
+                    'img[class*="main"]',
+                    'img[class*="featured"]',
+                    'article img'  # 일반 기사 이미지
+                ]
+                
+                for selector in img_selectors:
+                    img_elem = soup.select_one(selector)
+                    if img_elem:
+                        if selector.startswith('meta'):
+                            img_src = img_elem.get('content', '')
+                        else:
+                            img_src = (img_elem.get('src', '') or 
+                                     img_elem.get('data-src', '') or
+                                     img_elem.get('data-lazy-src', ''))
+                        
+                        if img_src and self._is_valid_thesun_image(img_src) and not self._is_default_icon(img_src):
+                            normalized_url = self._normalize_image_url(img_src)
+                            logger.debug(f"The Sun 페이지에서 이미지 추출 성공: {normalized_url}")
+                            return normalized_url
+                            
+        except Exception as e:
+            logger.debug(f"The Sun 페이지에서 이미지 추출 실패: {e}")
+        
+        return ''
+    
+    def _is_real_news_url(self, url: str) -> bool:
+        """실제 뉴스 기사 URL인지 확인"""
+        if not url or 'thesun.co.uk' not in url:
+            return False
+            
+        # 실제 뉴스 기사 패턴 확인
+        news_patterns = ['/sport/', '/news/', '/money/', '/tech/', '/health/', '/fabulous/', '/showbiz/']
+        if not any(pattern in url for pattern in news_patterns):
+            return False
+            
+        # 시스템 페이지들 제외
+        exclude_patterns = [
+            '/clarifications', '/syndication', '/commissioning', '/about', 
+            '/contact', '/privacy', '/terms', '/cookie', '/login', '/register'
+        ]
+        if any(pattern in url for pattern in exclude_patterns):
+            return False
+            
+        return True
+    
+    def _is_default_icon(self, img_src: str) -> bool:
+        """기본 아이콘인지 확인"""
+        if not img_src:
+            return True
+            
+        # 기본 아이콘 패턴들
+        default_patterns = [
+            'icon-e1459786005667.png',  # The Sun 기본 아이콘
+            'icon.png', 'logo.png', 'default.png',
+            'favicon', 'apple-touch-icon',
+            'sunmasthead.svg'  # The Sun 로고
+        ]
+        
+        return any(pattern in img_src for pattern in default_patterns)
+    
+    def _get_fallback_image_url(self, category: str, article_url: str) -> str:
+        """카테고리별 적절한 폴백 이미지 URL 제공"""
+        # The Sun의 카테고리별 기본 이미지들 (실제 뉴스와 관련된 이미지)
+        category_images = {
+            'sport': 'https://www.thesun.co.uk/wp-content/uploads/2024/01/sport-default.jpg',
+            'sports': 'https://www.thesun.co.uk/wp-content/uploads/2024/01/sport-default.jpg',
+            'business': 'https://www.thesun.co.uk/wp-content/uploads/2024/01/money-default.jpg',
+            'technology': 'https://www.thesun.co.uk/wp-content/uploads/2024/01/tech-default.jpg',
+            'tech': 'https://www.thesun.co.uk/wp-content/uploads/2024/01/tech-default.jpg',
+            'health': 'https://www.thesun.co.uk/wp-content/uploads/2024/01/health-default.jpg',
+            'entertainment': 'https://www.thesun.co.uk/wp-content/uploads/2024/01/showbiz-default.jpg',
+            'news': 'https://www.thesun.co.uk/wp-content/uploads/2024/01/news-default.jpg'
+        }
+        
+        # 현재는 빈 문자열을 반환하여 프론트엔드에서 기본 이미지를 처리하도록 함
+        # 향후 The Sun이 더 나은 이미지 API를 제공하면 업데이트 가능
+        return '' 

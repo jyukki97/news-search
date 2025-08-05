@@ -18,7 +18,7 @@ from ..scrapers.bangkokpost_scraper import BangkokPostScraper
 from ..scrapers.asahi_scraper import AsahiScraper
 from ..scrapers.yomiuri_scraper import YomiuriScraper
 from ..scrapers.hybrid_dailymail_scraper import HybridDailyMailScraper
-from ..scrapers.hybrid_scmp_scraper import HybridSCMPScraper
+from ..scrapers.scmp_scraper import SCMPScraper
 from ..scrapers.hybrid_nypost_scraper import HybridNYPostScraper
 from ..scrapers.thethaiger_scraper import TheThaigerScraper
 
@@ -34,10 +34,10 @@ bangkokpost_scraper = BangkokPostScraper()
 asahi_scraper = AsahiScraper()
 yomiuri_scraper = YomiuriScraper()
 # 하이브리드 스크래퍼들 (느림)
+scmp_scraper = SCMPScraper()
+thethaiger_scraper = TheThaigerScraper()
 nypost_scraper = HybridNYPostScraper()
 dailymail_scraper = HybridDailyMailScraper()
-scmp_scraper = HybridSCMPScraper()
-thethaiger_scraper = TheThaigerScraper()
 
 def run_scraper_search(scraper, query, limit):
     """스크래퍼 검색을 실행하는 헬퍼 함수 (실제 검색용)"""

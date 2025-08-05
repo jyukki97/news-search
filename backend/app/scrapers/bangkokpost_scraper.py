@@ -17,10 +17,10 @@ class BangkokPostScraper:
         self.base_url = "https://www.bangkokpost.com"
         self.search_url = "https://www.bangkokpost.com/search"
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us',
+            'Accept-Encoding': 'gzip, deflate',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
         }
@@ -209,7 +209,7 @@ class BangkokPostScraper:
                             'category': category,
                             'scraped_at': datetime.now().isoformat(),
                             'relevance_score': 1,
-                            'image_url': image_url
+                            'image_url': image_url or self._get_fallback_image(category)
                         }
                         
                         articles.append(article)
@@ -377,90 +377,151 @@ class BangkokPostScraper:
         return ''
     
     def _is_valid_bangkokpost_article_image(self, url: str) -> bool:
-        """기사 페이지에서 추출한 이미지가 유효한 실제 이미지인지 확인"""
+        """기사 페이지에서 추출한 이미지가 유효한 실제 이미지인지 확인 (개선됨)"""
         if not url:
+            return False
+        
+        # 데이터 URL과 blob URL 제외
+        if url.startswith('data:') or url.startswith('blob:'):
             return False
         
         url_lower = url.lower()
         
-        # Bangkok Post 로고나 아이콘들 제외
+        # 더 구체적인 제외 패턴 - 명확한 UI 요소만 제외
         exclude_patterns = [
             'bp-business.png', 'bp-news.png', 'bp-sports.png', 'bp-tech.png',
-            'bangkokpost.png', '/icons/', '/logo', 'favicon',
-            'sprite', 'loading', 'placeholder', 'blank.gif',
-            'alert.svg', 'icon-close.svg'
+            'bangkokpost-logo', 'logo-bangkokpost',
+            'favicon.ico', 'favicon.png',
+            'alert.svg', 'icon-close.svg', 'icon-arrow',
+            'placeholder-image', 'no-image', 'default-image'
         ]
         
         for pattern in exclude_patterns:
             if pattern in url_lower:
                 return False
         
-        # 데이터 URL 제외
-        if url.startswith('data:'):
+        # 크기 제한 - 너무 작은 이미지 (UI 아이콘일 가능성) 제외
+        size_indicators = ['16x16', '24x24', '32x32', '48x48', '64x64']
+        if any(size in url_lower for size in size_indicators):
             return False
         
-        # 유효한 이미지 패턴 확인
+        # 유효한 이미지 패턴 - 더 포괄적으로
         valid_patterns = [
-            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp',
-            'static.bangkokpost.com',  # Bangkok Post CDN
-            '/images/', '/photos/', '/pictures/'
+            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg',
+            'bangkokpost.com',
+            'static.bangkokpost.com', 
+            'cdn.bangkokpost.com',
+            'media.bangkokpost.com',
+            '/image/', '/images/', '/photo/', '/photos/', '/pictures/', '/media/',
+            '/uploads/', '/wp-content/', '/assets/', '/content/'
         ]
         
-        return any(pattern in url_lower for pattern in valid_patterns)
+        # 최소 길이 확인 - 너무 짧은 URL은 보통 아이콘
+        if len(url) > 20:
+            return any(pattern in url_lower for pattern in valid_patterns)
+        
+        return False
     
     def _is_valid_bangkokpost_image(self, url: str) -> bool:
-        """방콕 포스트 이미지 URL이 유효한지 확인"""
+        """방콕 포스트 이미지 URL이 유효한지 확인 (개선됨)"""
         if not url:
+            return False
+        
+        # 데이터 URL과 빈 이미지 제외
+        if url.startswith('data:') or url.startswith('blob:'):
             return False
         
         url_lower = url.lower()
         
-        # 제외할 이미지들
+        # 더 관대한 제외 패턴 - 명확한 로고/아이콘만 제외
         exclude_patterns = [
-            'logo', 'alert.svg', 'icon-close.svg', 'favicon',
-            'sprite', 'loading', 'placeholder', 'blank.gif'
+            'logo.png', 'logo.jpg', 'logo.svg',
+            'favicon.ico', 'favicon.png',
+            'sprite.png', 'sprite.jpg',
+            'blank.gif', 'transparent.gif',
+            '/icons/small/', '/icons/tiny/'
         ]
         
         for pattern in exclude_patterns:
             if pattern in url_lower:
                 return False
         
-        # 데이터 URL 제외
-        if url.startswith('data:'):
-            return False
-        
-        # 유효한 이미지 확장자나 방콕 포스트 이미지 패턴 확인
+        # 유효한 이미지 패턴 - 더 포괄적으로 수정
         valid_patterns = [
-            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp',
-            'bangkokpost.com', 'static.bangkokpost.com'
+            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg',
+            'bangkokpost.com',
+            'static.bangkokpost.com', 
+            'cdn.bangkokpost.com',
+            '/image/', '/images/', '/photo/', '/photos/', '/media/',
+            '/uploads/', '/wp-content/uploads/'
         ]
         
         return any(pattern in url_lower for pattern in valid_patterns)
     
     def _extract_category_from_url(self, url: str) -> str:
-        """URL에서 카테고리 추출"""
+        """URL에서 카테고리 추출 (표준화됨)"""
         try:
-            # Bangkok Post URL 패턴에서 카테고리 추출
-            if '/news/' in url:
+            if not url:
                 return 'news'
-            elif '/business/' in url:
-                return 'business'
-            elif '/sports/' in url:
-                return 'sports'
-            elif '/tech/' in url or '/technology/' in url:
-                return 'technology'
-            elif '/world/' in url:
-                return 'world'
-            elif '/travel/' in url:
-                return 'travel'
-            elif '/lifestyle/' in url:
-                return 'lifestyle'
-            elif '/opinion/' in url:
-                return 'opinion'
-            elif '/auto/' in url:
-                return 'auto'
-            else:
-                return 'news'
+                
+            url_lower = url.lower()
+            
+            # 우선순위 기반 카테고리 매핑 (표준 카테고리로 통일)
+            category_patterns = [
+                # 비즈니스/경제 (높은 우선순위)
+                ('/business/', 'business'),
+                ('/economy/', 'business'),
+                ('/finance/', 'business'),
+                ('/market/', 'business'),
+                
+                # 스포츠 (높은 우선순위)
+                ('/sports/', 'sports'),
+                ('/sport/', 'sports'),
+                
+                # 기술
+                ('/tech/', 'technology'),
+                ('/technology/', 'technology'),
+                
+                # 엔터테인먼트
+                ('/arts-and-entertainment/', 'entertainment'),
+                ('/entertainment/', 'entertainment'),
+                
+                # 라이프스타일
+                ('/life/', 'lifestyle'),
+                ('/lifestyle/', 'lifestyle'),
+                ('/social-and-lifestyle/', 'lifestyle'),
+                ('/travel/', 'lifestyle'),  # 여행을 라이프스타일로 분류
+                
+                # 정치 (키워드 기반)
+                ('/politics/', 'politics'),
+                
+                # 국제
+                ('/world/', 'world'),
+                
+                # 의견
+                ('/opinion/', 'opinion'),
+                
+                # 기타
+                ('/auto/', 'lifestyle'),
+                ('/learning/', 'education'),
+                ('/education/', 'education'),
+                
+                # 지역 뉴스 (낮은 우선순위)
+                ('/thailand/', 'news'),
+            ]
+            
+            # 우선순위에 따라 매칭
+            for pattern, category in category_patterns:
+                if pattern in url_lower:
+                    return category
+            
+            # 키워드 기반 추가 분류
+            if any(word in url_lower for word in ['politic', 'government', 'minister', 'election']):
+                return 'politics'
+            elif any(word in url_lower for word in ['health', 'medical', 'hospital']):
+                return 'health'
+            
+            return 'news'  # 기본값
         except:
             return 'news'
     
@@ -483,18 +544,45 @@ class BangkokPostScraper:
                 'opinion': f"{self.base_url}/opinion"
             }
             
-            url = category_urls.get(category, category_urls['news'])
+            # Bangkok Post는 메인 페이지만 안정적으로 작동하므로 메인 페이지 우선 사용
+            # 메인 페이지에는 모든 카테고리의 기사가 포함되어 있음
+            url_priority = [
+                self.base_url,  # 메인 페이지 (가장 안정적)
+            ]
             
-            logger.info(f"Bangkok Post 최신 뉴스 가져오기: {url}")
+            # 요청된 카테고리가 있으면 해당 URL도 시도해보지만 실패해도 괜찮음
+            if category != 'all':
+                category_url = category_urls.get(category)
+                if category_url and category_url != self.base_url:
+                    url_priority.insert(0, category_url)  # 먼저 시도하되 실패하면 메인으로
             
-            response = requests.get(url, headers=self.headers, timeout=15)
-            response.raise_for_status()
+            for url in url_priority:
+                try:
+                    # 메인 페이지가 아닌 경우 더 짧은 타임아웃 사용
+                    timeout = 10 if url != self.base_url else 20
+                    logger.info(f"Bangkok Post 최신 뉴스 시도: {url} (timeout: {timeout}s)")
+                    
+                    response = requests.get(url, headers=self.headers, timeout=timeout)
+                    if response.status_code == 200:
+                        # 실제 웹사이트 구조에 맞게 기사 추출
+                        articles = self._extract_bangkokpost_articles(response.text, limit, category)
+                        if articles:
+                            logger.info(f"Bangkok Post {url}에서 {len(articles)}개 기사 수집 성공")
+                            return articles
+                        else:
+                            logger.debug(f"Bangkok Post {url}에서 기사 추출 실패")
+                    else:
+                        logger.debug(f"Bangkok Post {url} 응답 코드: {response.status_code}")
+                
+                except requests.exceptions.Timeout:
+                    logger.debug(f"Bangkok Post {url} 타임아웃 (timeout: {timeout}s)")
+                    continue
+                except Exception as e:
+                    logger.debug(f"Bangkok Post {url} 오류: {e}")
+                    continue
             
-            # 실제 웹사이트 구조에 맞게 기사 추출
-            articles = self._extract_bangkokpost_articles(response.text, limit, category)
-            logger.info(f"Bangkok Post 최신 뉴스 {len(articles)}개 수집")
-            
-            return articles
+            logger.warning("Bangkok Post 모든 URL 시도 실패")
+            return []
             
         except Exception as e:
             logger.error(f"Bangkok Post 최신 뉴스 가져오기 실패: {e}")
@@ -507,18 +595,22 @@ class BangkokPostScraper:
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Bangkok Post 실제 기사 선택자들 (웹 검색 결과 분석 기반)
+            # Bangkok Post 실제 기사 선택자들 (테스트로 확인된 패턴)
             article_selectors = [
-                # 메인 기사들
-                'h3 a[href*="/"]',  # h3 태그 안의 링크
-                'h2 a[href*="/"]',  # h2 태그 안의 링크
-                'h4 a[href*="/"]',  # h4 태그 안의 링크
-                # 기사 컨테이너들
-                '.story a[href*="/"]',
-                '.article a[href*="/"]',
-                '.news-item a[href*="/"]',
-                # 일반적인 링크들
-                'a[href*="/"][href*="-"]'  # URL에 하이픈이 포함된 기사 링크
+                # 가장 효과적인 패턴들 (테스트로 확인됨)
+                'h3 a[href*="/thailand/"]',
+                'h3 a[href*="/business/"]',
+                'h3 a[href*="/world/"]',
+                'h3 a[href*="/news/"]',
+                'h3 a[href*="/sports/"]',
+                'h2 a[href*="/thailand/"]',
+                'h2 a[href*="/business/"]',
+                'h1 a[href*="/thailand/"]',
+                # 일반적인 기사 링크들
+                'a[href*="bangkokpost.com/thailand/"]',
+                'a[href*="bangkokpost.com/business/"]',
+                'a[href*="bangkokpost.com/world/"]',
+                'a[href*="bangkokpost.com/news/"]'
             ]
             
             found_urls = set()
@@ -547,10 +639,12 @@ class BangkokPostScraper:
                                 else:
                                     url = self.base_url + '/' + url
                             
-                            # Bangkok Post URL 확인
-                            if 'bangkokpost.com' not in url:
+                            # Bangkok Post URL 확인 및 유효한 기사 경로인지 확인
+                            if ('bangkokpost.com' not in url or 
+                                not any(section in url for section in ['/thailand/', '/business/', '/world/', '/news/', '/sports/', '/life/']) or
+                                any(invalid in url for invalid in ['/campaign', '/topics', '/archive', '/multimedia'])):
                                 continue
-                                
+                            
                             # 중복 확인
                             if url in found_urls:
                                 continue
@@ -559,25 +653,21 @@ class BangkokPostScraper:
                             # 불필요한 링크 필터링
                             if any(skip in url.lower() for skip in [
                                 '/search', '/login', '/register', '/subscribe', 
-                                '/contact', '/about', '/terms', '/privacy',
+                                '/contact', '/about', '/terms', '/privacy', '/archive',
                                 'facebook.com', 'twitter.com', 'instagram.com'
                             ]):
                                 continue
                                 
-                            # 너무 짧은 제목 제외
-                            if len(title) < 15:
+                            # 너무 짧은 제목이나 카테고리 이름만 있는 것 제외
+                            if len(title) < 10 or title.lower() in [
+                                'news', 'business', 'world', 'thailand', 'sports', 'life',
+                                'general', 'politics', 'crime', 'special reports'
+                            ]:
                                 continue
                                 
-                            # 네비게이션 링크들 제외
-                            if any(nav in title.lower() for nav in [
-                                'home', 'search', 'subscribe', 'login', 'register',
-                                'facebook', 'twitter', 'instagram', 'contact',
-                                'general', 'motoring', 'investment', 'columnist',
-                                'special features', 'campaign', 'events', 'multimedia',
-                                'photos', 'video', 'podcast', 'sustainability', 'learning',
-                                'guru', 'life', 'travel', 'arts', 'entertainment',
-                                'social', 'lifestyle', 'opinion', 'postbag'
-                            ]):
+                            # 네비게이션 링크들과 섹션 이름들 제외 (더 간단하게)
+                            nav_words = ['home', 'search', 'subscribe', 'login', 'register', 'contact', 'about']
+                            if any(nav in title.lower() for nav in nav_words):
                                 continue
                             
                             # 요약과 이미지 추출을 위해 링크의 부모 요소 찾기
@@ -601,6 +691,12 @@ class BangkokPostScraper:
                             # 카테고리 추출
                             article_category = self._extract_category_from_url(url) or category
                             
+                            # 특정 카테고리가 요청된 경우 필터링 (all이 아닌 경우)
+                            if (category and category != 'all' and category != 'news' and 
+                                article_category != category):
+                                # sports나 business 등 특정 카테고리가 요청됐는데 다른 카테고리면 스킵
+                                continue
+                            
                             article = {
                                 'title': title,
                                 'url': url,
@@ -610,7 +706,7 @@ class BangkokPostScraper:
                                 'category': article_category,
                                 'scraped_at': datetime.now().isoformat(),
                                 'relevance_score': 1,
-                                'image_url': image_url
+                                'image_url': image_url or self._get_fallback_image(article_category)
                             }
                             
                             articles.append(article)
